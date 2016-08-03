@@ -7,7 +7,9 @@ const symbol = Symbol('foo');
 assert.equal(util.format(), '');
 assert.equal(util.format(''), '');
 assert.equal(util.format([]), '[]');
+assert.equal(util.format([0]), '[ 0 ]');
 assert.equal(util.format({}), '{}');
+assert.equal(util.format({foo: 42}), '{ foo: 42 }');
 assert.equal(util.format(null), 'null');
 assert.equal(util.format(true), 'true');
 assert.equal(util.format(false), 'false');
@@ -48,11 +50,11 @@ assert.equal(util.format('%s:%s', 'foo', 'bar', 'baz'), 'foo:bar baz');
 assert.equal(util.format('%%%s%%', 'hi'), '%hi%');
 assert.equal(util.format('%%%s%%%%', 'hi'), '%hi%%');
 
-(function() {
-  var o = {};
+{
+  const o = {};
   o.o = o;
   assert.equal(util.format('%j', o), '[Circular]');
-})();
+}
 
 // Errors
 const err = new Error('foo');

@@ -107,8 +107,8 @@ Example:
 const https = require('https');
 
 https.get('https://encrypted.google.com/', (res) => {
-  console.log('statusCode: ', res.statusCode);
-  console.log('headers: ', res.headers);
+  console.log('statusCode:', res.statusCode);
+  console.log('headers:', res.headers);
 
   res.on('data', (d) => {
     process.stdout.write(d);
@@ -151,8 +151,8 @@ var options = {
 };
 
 var req = https.request(options, (res) => {
-  console.log('statusCode: ', res.statusCode);
-  console.log('headers: ', res.headers);
+  console.log('statusCode:', res.statusCode);
+  console.log('headers:', res.headers);
 
   res.on('data', (d) => {
     process.stdout.write(d);
@@ -231,7 +231,7 @@ options.agent = new https.Agent(options);
 
 var req = https.request(options, (res) => {
   ...
-}
+});
 ```
 
 Alternatively, opt out of connection pooling by not using an `Agent`.
@@ -251,7 +251,7 @@ var options = {
 
 var req = https.request(options, (res) => {
   ...
-}
+});
 ```
 
 [`Agent`]: #https_class_https_agent

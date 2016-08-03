@@ -112,7 +112,7 @@ cctest: all
 
 v8:
 	tools/make-v8.sh v8
-	$(MAKE) -C deps/v8 $(V8_ARCH) $(V8_BUILD_OPTIONS)
+	$(MAKE) -C deps/v8 $(V8_ARCH).$(BUILDTYPE_LOWER) $(V8_BUILD_OPTIONS)
 
 test: all
 	$(MAKE) build-addons
@@ -150,7 +150,8 @@ ADDONS_BINDING_SOURCES := \
 # Implicitly depends on $(NODE_EXE), see the build-addons rule for rationale.
 # Depends on node-gyp package.json so that build-addons is (re)executed when
 # node-gyp is updated as part of an npm update.
-test/addons/.buildstamp: deps/npm/node_modules/node-gyp/package.json \
+test/addons/.buildstamp: config.gypi \
+	deps/npm/node_modules/node-gyp/package.json \
 	$(ADDONS_BINDING_GYPS) $(ADDONS_BINDING_SOURCES) \
 	deps/uv/include/*.h deps/v8/include/*.h \
 	src/node.h src/node_buffer.h src/node_object_wrap.h \
@@ -246,7 +247,7 @@ test-timers-clean:
 
 
 ifneq ("","$(wildcard deps/v8/tools/run-tests.py)")
-test-v8:
+test-v8: v8
 	# note: performs full test unless QUICKCHECK is specified
 	deps/v8/tools/run-tests.py --arch=$(V8_ARCH) \
         --mode=$(BUILDTYPE_LOWER) $(V8_TEST_OPTIONS) $(QUICKCHECK_ARG) \
@@ -254,14 +255,14 @@ test-v8:
         --shell-dir=$(PWD)/deps/v8/out/$(V8_ARCH).$(BUILDTYPE_LOWER) \
 	 $(TAP_V8)
 
-test-v8-intl:
+test-v8-intl: v8
 	# note: performs full test unless QUICKCHECK is specified
 	deps/v8/tools/run-tests.py --arch=$(V8_ARCH) \
         --mode=$(BUILDTYPE_LOWER) --no-presubmit $(QUICKCHECK_ARG) \
         --shell-dir=deps/v8/out/$(V8_ARCH).$(BUILDTYPE_LOWER) intl \
         $(TAP_V8_INTL)
 
-test-v8-benchmarks:
+test-v8-benchmarks: v8
 	deps/v8/tools/run-tests.py --arch=$(V8_ARCH) --mode=$(BUILDTYPE_LOWER) \
         --download-data $(QUICKCHECK_ARG) --no-presubmit \
         --shell-dir=deps/v8/out/$(V8_ARCH).$(BUILDTYPE_LOWER) benchmarks \
@@ -627,41 +628,41 @@ ifneq ($(haswrk), 0)
 endif
 
 bench-net: all
-	@$(NODE) benchmark/common.js net
+	@$(NODE) benchmark/run.js net
 
 bench-crypto: all
-	@$(NODE) benchmark/common.js crypto
+	@$(NODE) benchmark/run.js crypto
 
 bench-tls: all
-	@$(NODE) benchmark/common.js tls
+	@$(NODE) benchmark/run.js tls
 
 bench-http: wrk all
-	@$(NODE) benchmark/common.js http
+	@$(NODE) benchmark/run.js http
 
 bench-fs: all
-	@$(NODE) benchmark/common.js fs
+	@$(NODE) benchmark/run.js fs
 
 bench-misc: all
 	@$(MAKE) -C benchmark/misc/function_call/
-	@$(NODE) benchmark/common.js misc
+	@$(NODE) benchmark/run.js misc
 
 bench-array: all
-	@$(NODE) benchmark/common.js arrays
+	@$(NODE) benchmark/run.js arrays
 
 bench-buffer: all
-	@$(NODE) benchmark/common.js buffers
+	@$(NODE) benchmark/run.js buffers
 
 bench-url: all
-	@$(NODE) benchmark/common.js url
+	@$(NODE) benchmark/run.js url
 
 bench-events: all
-	@$(NODE) benchmark/common.js events
+	@$(NODE) benchmark/run.js events
 
 bench-util: all
-	@$(NODE) benchmark/common.js util
+	@$(NODE) benchmark/run.js util
 
 bench-dgram: all
-	@$(NODE) benchmark/common.js dgram
+	@$(NODE) benchmark/run.js dgram
 
 bench-all: bench bench-misc bench-array bench-buffer bench-url bench-events bench-dgram bench-util
 
@@ -669,22 +670,12 @@ bench: bench-net bench-http bench-fs bench-tls
 
 bench-ci: bench
 
-bench-http-simple:
-	benchmark/http_simple_bench.sh
-
-bench-idle:
-	$(NODE) benchmark/idle_server.js &
-	sleep 1
-	$(NODE) benchmark/idle_clients.js &
-
 jslint:
-	$(NODE) tools/jslint.js -J benchmark lib src test tools/doc \
-	  tools/eslint-rules tools/jslint.js
+	$(NODE) tools/jslint.js -J benchmark lib src test tools
 
 jslint-ci:
 	$(NODE) tools/jslint.js $(PARALLEL_ARGS) -f tap -o test-eslint.tap \
-		benchmark lib src test tools/doc \
-		tools/eslint-rules tools/jslint.js
+		benchmark lib src test tools
 
 CPPLINT_EXCLUDE ?=
 CPPLINT_EXCLUDE += src/node_root_certs.h
@@ -708,7 +699,16 @@ cpplint:
 
 ifneq ("","$(wildcard tools/eslint/bin/eslint.js)")
 lint: jslint cpplint
+CONFLICT_RE=^>>>>>>> [0-9A-Fa-f]+|^<<<<<<< [A-Za-z]+
 lint-ci: jslint-ci cpplint
+	@if ! ( grep -IEqrs "$(CONFLICT_RE)" benchmark deps doc lib src test tools ) \
+		&& ! ( find . -maxdepth 1 -type f | xargs grep -IEqs "$(CONFLICT_RE)" ); then \
+		exit 0 ; \
+	else \
+		echo "" >&2 ; \
+		echo "Conflict marker detected in one or more files. Please fix them first." >&2 ; \
+		exit 1 ; \
+	fi
 else
 lint:
 	@echo "Linting is not available through the source tarball."

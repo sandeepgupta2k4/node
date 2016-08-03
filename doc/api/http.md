@@ -12,7 +12,7 @@ user is able to stream data.
 
 HTTP message headers are represented by an object like this:
 
-```
+```js
 { 'content-length': '123',
   'content-type': 'text/plain',
   'connection': 'keep-alive',
@@ -34,7 +34,7 @@ property, which is an array of `[key, value, key2, value2, ...]`.  For
 example, the previous message header object might have a `rawHeaders`
 list like the following:
 
-```
+```js
 [ 'ConTent-Length', '123456',
   'content-LENGTH', '123',
   'content-type', 'text/plain',
@@ -90,7 +90,7 @@ http.get({
   agent: false  // create a new agent just for this one request
 }, (res) => {
   // Do stuff with response
-})
+});
 ```
 
 ### new Agent([options])
@@ -222,16 +222,16 @@ header is still mutable using the `setHeader(name, value)`, `getHeader(name)`,
 `removeHeader(name)` API.  The actual header will be sent along with the first
 data chunk or when closing the connection.
 
-To get the response, add a listener for `'response'` to the request object.
-`'response'` will be emitted from the request object when the response
-headers have been received.  The `'response'` event is executed with one
+To get the response, add a listener for [`'response'`][] to the request object.
+[`'response'`][] will be emitted from the request object when the response
+headers have been received.  The [`'response'`][] event is executed with one
 argument which is an instance of [`http.IncomingMessage`][].
 
-During the `'response'` event, one can add listeners to the
+During the [`'response'`][] event, one can add listeners to the
 response object; particularly to listen for the `'data'` event.
 
-If no `'response'` handler is added, then the response will be
-entirely discarded.  However, if you add a `'response'` event handler,
+If no [`'response'`][] handler is added, then the response will be
+entirely discarded.  However, if you add a [`'response'`][] event handler,
 then you **must** consume the data from the response object, either by
 calling `response.read()` whenever there is a `'readable'` event, or
 by adding a `'data'` handler, or by calling the `.resume()` method.
@@ -676,8 +676,8 @@ already been bound to a port or domain socket.
 
 Listening on a file descriptor is not supported on Windows.
 
-This function is asynchronous. The last parameter `callback` will be added as
-a listener for the `'listening'` event. See also [`net.Server.listen()`][].
+This function is asynchronous. `callback` will be added as a listener for the
+[`'listening'`][] event. See also [`net.Server.listen()`][].
 
 Returns `server`.
 
@@ -688,8 +688,8 @@ added: v0.1.90
 
 Start a UNIX socket server listening for connections on the given `path`.
 
-This function is asynchronous. The last parameter `callback` will be added as
-a listener for the `'listening'` event.  See also [`net.Server.listen(path)`][].
+This function is asynchronous. `callback` will be added as a listener for the
+[`'listening'`][] event.  See also [`net.Server.listen(path)`][].
 
 ### server.listen(port[, hostname][, backlog][, callback])
 <!-- YAML
@@ -708,8 +708,8 @@ The actual length will be determined by your OS through sysctl settings such as
 `tcp_max_syn_backlog` and `somaxconn` on linux. The default value of this
 parameter is 511 (not 512).
 
-This function is asynchronous. The last parameter `callback` will be added as
-a listener for the `'listening'` event.  See also [`net.Server.listen(port)`][].
+This function is asynchronous. `callback` will be added as a listener for the
+[`'listening'`][] event.  See also [`net.Server.listen(port)`][].
 
 ### server.listening
 <!-- YAML
@@ -1004,8 +1004,8 @@ be called multiple times to provide successive parts of the body.
 
 `chunk` can be a string or a buffer. If `chunk` is a string,
 the second parameter specifies how to encode it into a byte stream.
-By default the `encoding` is `'utf8'`. The last parameter `callback`
-will be called when this chunk of data is flushed.
+By default the `encoding` is `'utf8'`. `callback` will be called when this chunk
+of data is flushed.
 
 **Note**: This is the raw HTTP body and has nothing to do with
 higher-level multi-part body encodings that may be used.
@@ -1084,7 +1084,7 @@ added: v0.1.17
 
 An `IncomingMessage` object is created by [`http.Server`][] or
 [`http.ClientRequest`][] and passed as the first argument to the `'request'`
-and `'response'` event respectively. It may be used to access response status,
+and [`'response'`][] event respectively. It may be used to access response status,
 headers and data.
 
 It implements the [Readable Stream][] interface, as well as the
@@ -1264,7 +1264,7 @@ added: v0.1.90
 Request URL string. This contains only the URL that is
 present in the actual HTTP request. If the request is:
 
-```
+```txt
 GET /status?name=ryan HTTP/1.1\r\n
 Accept: text/plain\r\n
 \r\n
@@ -1272,14 +1272,14 @@ Accept: text/plain\r\n
 
 Then `request.url` will be:
 
-```
+```js
 '/status?name=ryan'
 ```
 
 If you would like to parse the URL into its parts, you can use
 `require('url').parse(request.url)`.  Example:
 
-```
+```txt
 $ node
 > require('url').parse('/status?name=ryan')
 {
@@ -1290,11 +1290,11 @@ $ node
 }
 ```
 
-If you would like to extract the params from the query string,
+If you would like to extract the parameters from the query string,
 you can use the `require('querystring').parse` function, or pass
 `true` as the second argument to `require('url').parse`.  Example:
 
-```
+```txt
 $ node
 > require('url').parse('/status?name=ryan', true)
 {
@@ -1419,7 +1419,7 @@ Options:
   function. See [`agent.createConnection()`][] for more details.
 
 The optional `callback` parameter will be added as a one time listener for
-the `'response'` event.
+the [`'response'`][] event.
 
 `http.request()` returns an instance of the [`http.ClientRequest`][]
 class. The `ClientRequest` instance is a writable stream. If one needs to
@@ -1451,8 +1451,8 @@ var req = http.request(options, (res) => {
     console.log(`BODY: ${chunk}`);
   });
   res.on('end', () => {
-    console.log('No more data in response.')
-  })
+    console.log('No more data in response.');
+  });
 });
 
 req.on('error', (e) => {
@@ -1521,7 +1521,6 @@ There are a few special headers that should be noted.
 [`socket.setKeepAlive()`]: net.html#net_socket_setkeepalive_enable_initialdelay
 [`socket.setNoDelay()`]: net.html#net_socket_setnodelay_nodelay
 [`socket.setTimeout()`]: net.html#net_socket_settimeout_timeout_callback
-[`stream.setEncoding()`]: stream.html#stream_stream_setencoding_encoding
 [`TypeError`]: errors.html#errors_class_typeerror
 [`url.parse()`]: url.html#url_url_parse_urlstring_parsequerystring_slashesdenotehost
 [constructor options]: #http_new_agent_options

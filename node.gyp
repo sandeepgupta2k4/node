@@ -141,6 +141,8 @@
         'src/env.cc',
         'src/fs_event_wrap.cc',
         'src/cares_wrap.cc',
+        'src/connection_wrap.cc',
+        'src/connect_wrap.cc',
         'src/handle_wrap.cc',
         'src/js_stream.cc',
         'src/node.cc',
@@ -177,6 +179,8 @@
         'src/async-wrap-inl.h',
         'src/base-object.h',
         'src/base-object-inl.h',
+        'src/connection_wrap.h',
+        'src/connect_wrap.h',
         'src/debug-agent.h',
         'src/env.h',
         'src/env-inl.h',
@@ -248,6 +252,9 @@
             }]
           ],
         }],
+        [ 'node_enable_d8=="true"', {
+          'dependencies': [ 'deps/v8/src/d8.gyp:d8' ],
+        }],
         [ 'node_use_bundled_v8=="true"', {
           'dependencies': [
             'deps/v8/tools/gyp/v8.gyp:v8',
@@ -303,6 +310,7 @@
           'defines': [
             'HAVE_INSPECTOR=1',
             'V8_INSPECTOR_USE_STL=1',
+            'V8_INSPECTOR_USE_OLD_STL=1',
           ],
           'sources': [
             'src/inspector_agent.cc',
@@ -311,11 +319,11 @@
             'src/inspector-agent.h',
           ],
           'dependencies': [
-            'deps/v8_inspector/platform/v8_inspector/v8_inspector.gyp:v8_inspector_stl',
+            'deps/v8_inspector/third_party/v8_inspector/platform/'
+                'v8_inspector/v8_inspector.gyp:v8_inspector_stl',
           ],
           'include_dirs': [
-            'deps/v8_inspector',
-            'deps/v8_inspector/deps/wtf', # temporary
+            'deps/v8_inspector/third_party/v8_inspector',
             '<(SHARED_INTERMEDIATE_DIR)/blink', # for inspector
           ],
         }, {
@@ -551,7 +559,8 @@
             'mkssldef_flags': [
               # Categories to export.
               '-CAES,BF,BIO,DES,DH,DSA,EC,ECDH,ECDSA,ENGINE,EVP,HMAC,MD4,MD5,'
-              'NEXTPROTONEG,PSK,RC2,RC4,RSA,SHA,SHA0,SHA1,SHA256,SHA512,TLSEXT',
+              'NEXTPROTONEG,PSK,RC2,RC4,RSA,SHA,SHA0,SHA1,SHA256,SHA512,SOCK,'
+              'STDIO,TLSEXT',
               # Defines.
               '-DWIN32',
               # Symbols to filter from the export list.
@@ -826,14 +835,26 @@
 
       'conditions': [
         ['v8_inspector=="true"', {
-          'dependencies': [
-            'deps/openssl/openssl.gyp:openssl',
-            'deps/http_parser/http_parser.gyp:http_parser',
-            'deps/uv/uv.gyp:libuv'
-          ],
           'sources': [
             'src/inspector_socket.cc',
             'test/cctest/test_inspector_socket.cc'
+          ],
+          'conditions': [
+            [ 'node_shared_openssl=="false"', {
+              'dependencies': [
+                'deps/openssl/openssl.gyp:openssl'
+              ]
+            }],
+            [ 'node_shared_http_parser=="false"', {
+              'dependencies': [
+                'deps/http_parser/http_parser.gyp:http_parser'
+              ]
+            }],
+            [ 'node_shared_libuv=="false"', {
+              'dependencies': [
+                'deps/uv/uv.gyp:libuv'
+              ]
+            }]
           ]
         }],
         [ 'node_use_v8_platform=="true"', {

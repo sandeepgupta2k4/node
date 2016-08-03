@@ -19,10 +19,21 @@ If you need help using or installing Node.js, please use the
 
 ## Resources for Newcomers
 
-* [Website](https://nodejs.org/en/)
-* [Contributing to the project](./CONTRIBUTING.md)
-* IRC (general questions): [#node.js on chat.freenode.net](https://webchat.freenode.net?channels=node.js&uio=d4)
-* IRC (node core development): [#node-dev on chat.freenode.net](https://webchat.freenode.net?channels=node-dev&uio=d4)
+### Official Resources
+
+* [Website][]
+* [Contributing to the project][]
+* IRC (node core development): [#node-dev on chat.freenode.net][]
+
+### Unofficial Resources
+
+* IRC (general questions): [#node.js on chat.freenode.net][]. Please see
+http://nodeirc.info/ for more information regarding the `#node.js` IRC channel.
+
+*Please note that unofficial resources are neither managed by (nor necessarily
+endorsed by) the Node.js TSC/CTC. Specifically, such resources are not
+currently covered by the [Node.js Moderation Policy][] and the selection and
+actions of resource operators/moderators are not subject to TSC/CTC oversight.*
 
 ## Release Types
 
@@ -165,11 +176,13 @@ information about the governance of the Node.js project, see
 ### Collaborators
 
 * [addaleax](https://github.com/addaleax) - **Anna Henningsen** &lt;anna@addaleax.net&gt;
+* [andrasq](https://github.com/andrasq) - **Andras** &lt;andras@kinvey.com&gt;
 * [AndreasMadsen](https://github.com/AndreasMadsen) - **Andreas Madsen** &lt;amwebdk@gmail.com&gt;
 * [bengl](https://github.com/bengl) - **Bryan English** &lt;bryan@bryanenglish.com&gt;
 * [benjamingr](https://github.com/benjamingr) - **Benjamin Gruenbaum** &lt;benjamingr@gmail.com&gt;
 * [bmeck](https://github.com/bmeck) - **Bradley Farias** &lt;bradley.meck@gmail.com&gt;
 * [brendanashworth](https://github.com/brendanashworth) - **Brendan Ashworth** &lt;brendan.ashworth@me.com&gt;
+* [bzoz](https://github.com/bzoz) - **Bartosz Sosnowski** &lt;bartosz@janeasystems.com&gt;
 * [calvinmetcalf](https://github.com/calvinmetcalf) - **Calvin Metcalf** &lt;calvin.metcalf@gmail.com&gt;
 * [claudiorodriguez](https://github.com/claudiorodriguez) - **Claudio Rodriguez** &lt;cjrodr@yahoo.com&gt;
 * [domenic](https://github.com/domenic) - **Domenic Denicola** &lt;d@domenic.me&gt;
@@ -198,6 +211,7 @@ information about the governance of the Node.js project, see
 * [petkaantonov](https://github.com/petkaantonov) - **Petka Antonov** &lt;petka_antonov@hotmail.com&gt;
 * [phillipj](https://github.com/phillipj) - **Phillip Johnsen** &lt;johphi@gmail.com&gt;
 * [pmq20](https://github.com/pmq20) - **Minqi Pan** &lt;pmq2001@gmail.com&gt;
+* [princejwesley](https://github.com/princejwesley) - **Prince John Wesley** &lt;princejohnwesley@gmail.com&gt;
 * [qard](https://github.com/qard) - **Stephen Belanger** &lt;admin@stephenbelanger.com&gt;
 * [rlidwka](https://github.com/rlidwka) - **Alex Kocharin** &lt;alex@kocharin.ru&gt;
 * [rmg](https://github.com/rmg) - **Ryan Graham** &lt;r.m.graham@gmail.com&gt;
@@ -263,3 +277,9 @@ keys:
 * **Isaac Z. Schlueter** &lt;i@izs.me&gt; `93C7E9E91B49E432C2F75674B0A78B0A6C481CF6`
 * **Julien Gilli** &lt;jgilli@fastmail.fm&gt; `114F43EE0176B71C7BC219DD50A3051F888C628D`
 * **Timothy J Fontaine** &lt;tjfontaine@gmail.com&gt; `7937DFD2AB06298B2293C3187D33FF9D0246406D`
+
+[Website]: https://nodejs.org/en/
+[Contributing to the project]: CONTRIBUTING.md
+[Node.js Moderation Policy]: https://github.com/nodejs/TSC/blob/master/Moderation-Policy.md
+[#node.js on chat.freenode.net]: https://webchat.freenode.net?channels=node.js&uio=d4
+[#node-dev on chat.freenode.net]: https://webchat.freenode.net?channels=node-dev&uio=d4

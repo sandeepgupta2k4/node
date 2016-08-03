@@ -209,6 +209,7 @@ inline MUST_USE_RESULT bool ParseArrayIndex(Local<Value> arg,
 
   // Check that the result fits in a size_t.
   const uint64_t kSizeMax = static_cast<uint64_t>(static_cast<size_t>(-1));
+  // coverity[pointless_expression]
   if (static_cast<uint64_t>(tmp_i) > kSizeMax)
     return false;
 
@@ -344,8 +345,8 @@ MaybeLocal<Object> New(Environment* env, size_t length) {
 
 
 MaybeLocal<Object> Copy(Isolate* isolate, const char* data, size_t length) {
+  EscapableHandleScope handle_scope(isolate);
   Environment* env = Environment::GetCurrent(isolate);
-  EscapableHandleScope handle_scope(env->isolate());
   Local<Object> obj;
   if (Buffer::Copy(env, data, length).ToLocal(&obj))
     return handle_scope.Escape(obj);
@@ -394,8 +395,8 @@ MaybeLocal<Object> New(Isolate* isolate,
                        size_t length,
                        FreeCallback callback,
                        void* hint) {
+  EscapableHandleScope handle_scope(isolate);
   Environment* env = Environment::GetCurrent(isolate);
-  EscapableHandleScope handle_scope(env->isolate());
   Local<Object> obj;
   if (Buffer::New(env, data, length, callback, hint).ToLocal(&obj))
     return handle_scope.Escape(obj);
@@ -433,8 +434,8 @@ MaybeLocal<Object> New(Environment* env,
 
 
 MaybeLocal<Object> New(Isolate* isolate, char* data, size_t length) {
+  EscapableHandleScope handle_scope(isolate);
   Environment* env = Environment::GetCurrent(isolate);
-  EscapableHandleScope handle_scope(env->isolate());
   Local<Object> obj;
   if (Buffer::New(env, data, length).ToLocal(&obj))
     return handle_scope.Escape(obj);
@@ -717,15 +718,15 @@ void StringWrite(const FunctionCallbackInfo<Value>& args) {
   size_t max_length;
 
   CHECK_NOT_OOB(ParseArrayIndex(args[1], 0, &offset));
+  if (offset >= ts_obj_length)
+    return env->ThrowRangeError("Offset is out of bounds");
+
   CHECK_NOT_OOB(ParseArrayIndex(args[2], ts_obj_length - offset, &max_length));
 
   max_length = MIN(ts_obj_length - offset, max_length);
 
   if (max_length == 0)
     return args.GetReturnValue().Set(0);
-
-  if (offset >= ts_obj_length)
-    return env->ThrowRangeError("Offset is out of bounds");
 
   uint32_t written = StringBytes::Write(env->isolate(),
                                         ts_obj_data + offset,

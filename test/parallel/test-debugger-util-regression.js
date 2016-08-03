@@ -1,9 +1,8 @@
 'use strict';
+const common = require('../common');
 const path = require('path');
 const spawn = require('child_process').spawn;
 const assert = require('assert');
-
-const common = require('../common');
 
 const fixture = path.join(
   common.fixturesDir,
@@ -39,12 +38,10 @@ proc.stdout.on('data', (data) => {
       stdout.includes('> 4') && nextCount < 4) {
     nextCount++;
     proc.stdin.write('n\n');
-  }
-  else if (stdout.includes('{ a: \'b\' }')) {
+  } else if (stdout.includes('{ a: \'b\' }')) {
     clearTimeout(timer);
     proc.stdin.write('.exit\n');
-  }
-  else if (stdout.includes('program terminated')) {
+  } else if (stdout.includes('program terminated')) {
     // Catch edge case present in v4.x
     // process will terminate after call to util.inspect
     common.fail('the program should not terminate');

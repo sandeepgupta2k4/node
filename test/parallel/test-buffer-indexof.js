@@ -79,62 +79,94 @@ assert.equal(b.indexOf(Buffer.from('f'), 6), -1);
 assert.equal(Buffer.from('ff').indexOf(Buffer.from('f'), 1, 'ucs2'), -1);
 
 // test hex encoding
-assert.equal(
-    Buffer.from(b.toString('hex'), 'hex')
-    .indexOf('64', 0, 'hex'), 3);
-assert.equal(
-    Buffer.from(b.toString('hex'), 'hex')
-    .indexOf(Buffer.from('64', 'hex'), 0, 'hex'), 3);
+assert.strictEqual(
+  Buffer.from(b.toString('hex'), 'hex')
+    .indexOf('64', 0, 'hex'),
+  3
+);
+assert.strictEqual(
+  Buffer.from(b.toString('hex'), 'hex')
+    .indexOf(Buffer.from('64', 'hex'), 0, 'hex'),
+  3
+);
 
 // test base64 encoding
-assert.equal(
-    Buffer.from(b.toString('base64'), 'base64')
-    .indexOf('ZA==', 0, 'base64'), 3);
-assert.equal(
-    Buffer.from(b.toString('base64'), 'base64')
-    .indexOf(Buffer.from('ZA==', 'base64'), 0, 'base64'), 3);
+assert.strictEqual(
+  Buffer.from(b.toString('base64'), 'base64')
+    .indexOf('ZA==', 0, 'base64'),
+  3
+);
+assert.strictEqual(
+  Buffer.from(b.toString('base64'), 'base64')
+    .indexOf(Buffer.from('ZA==', 'base64'), 0, 'base64'),
+  3
+);
 
 // test ascii encoding
-assert.equal(
-    Buffer.from(b.toString('ascii'), 'ascii')
-    .indexOf('d', 0, 'ascii'), 3);
-assert.equal(
-    Buffer.from(b.toString('ascii'), 'ascii')
-    .indexOf(Buffer.from('d', 'ascii'), 0, 'ascii'), 3);
+assert.strictEqual(
+  Buffer.from(b.toString('ascii'), 'ascii')
+    .indexOf('d', 0, 'ascii'),
+  3
+);
+assert.strictEqual(
+  Buffer.from(b.toString('ascii'), 'ascii')
+    .indexOf(Buffer.from('d', 'ascii'), 0, 'ascii'),
+  3
+);
 
 // test latin1 encoding
-assert.equal(
-    Buffer.from(b.toString('latin1'), 'latin1')
-    .indexOf('d', 0, 'latin1'), 3);
-assert.equal(
-    Buffer.from(b.toString('latin1'), 'latin1')
-    .indexOf(Buffer.from('d', 'latin1'), 0, 'latin1'), 3);
-assert.equal(
-    Buffer.from('aa\u00e8aa', 'latin1')
-    .indexOf('\u00e8', 'latin1'), 2);
-assert.equal(
-    Buffer.from('\u00e8', 'latin1')
-    .indexOf('\u00e8', 'latin1'), 0);
-assert.equal(
-    Buffer.from('\u00e8', 'latin1')
-    .indexOf(Buffer.from('\u00e8', 'latin1'), 'latin1'), 0);
+assert.strictEqual(
+  Buffer.from(b.toString('latin1'), 'latin1')
+    .indexOf('d', 0, 'latin1'),
+  3
+);
+assert.strictEqual(
+  Buffer.from(b.toString('latin1'), 'latin1')
+    .indexOf(Buffer.from('d', 'latin1'), 0, 'latin1'),
+  3
+);
+assert.strictEqual(
+  Buffer.from('aa\u00e8aa', 'latin1')
+    .indexOf('\u00e8', 'latin1'),
+  2
+);
+assert.strictEqual(
+  Buffer.from('\u00e8', 'latin1')
+    .indexOf('\u00e8', 'latin1'),
+  0
+);
+assert.strictEqual(
+  Buffer.from('\u00e8', 'latin1')
+    .indexOf(Buffer.from('\u00e8', 'latin1'), 'latin1'),
+  0
+);
 
 // test binary encoding
-assert.equal(
-    Buffer.from(b.toString('binary'), 'binary')
-    .indexOf('d', 0, 'binary'), 3);
-assert.equal(
-    Buffer.from(b.toString('binary'), 'binary')
-    .indexOf(Buffer.from('d', 'binary'), 0, 'binary'), 3);
-assert.equal(
-    Buffer.from('aa\u00e8aa', 'binary')
-    .indexOf('\u00e8', 'binary'), 2);
-assert.equal(
-    Buffer.from('\u00e8', 'binary')
-    .indexOf('\u00e8', 'binary'), 0);
-assert.equal(
-    Buffer.from('\u00e8', 'binary')
-    .indexOf(Buffer.from('\u00e8', 'binary'), 'binary'), 0);
+assert.strictEqual(
+  Buffer.from(b.toString('binary'), 'binary')
+    .indexOf('d', 0, 'binary'),
+  3
+);
+assert.strictEqual(
+  Buffer.from(b.toString('binary'), 'binary')
+    .indexOf(Buffer.from('d', 'binary'), 0, 'binary'),
+  3
+);
+assert.strictEqual(
+  Buffer.from('aa\u00e8aa', 'binary')
+    .indexOf('\u00e8', 'binary'),
+  2
+);
+assert.strictEqual(
+  Buffer.from('\u00e8', 'binary')
+    .indexOf('\u00e8', 'binary'),
+  0
+);
+assert.strictEqual(
+  Buffer.from('\u00e8', 'binary')
+    .indexOf(Buffer.from('\u00e8', 'binary'), 'binary'),
+  0
+);
 
 
 // test optional offset with passed encoding
@@ -470,3 +502,19 @@ pattern = reallyLong.slice(0, 1000000);  // First 1/5th.
 assert.equal(3932160, reallyLong.lastIndexOf(pattern));
 pattern = reallyLong.slice(0, 2000000);  // first 2/5ths.
 assert.equal(0, reallyLong.lastIndexOf(pattern));
+
+// test truncation of Number arguments to uint8
+{
+  const buf = Buffer.from('this is a test');
+  assert.strictEqual(buf.indexOf(0x6973), 3);
+  assert.strictEqual(buf.indexOf(0x697320), 4);
+  assert.strictEqual(buf.indexOf(0x69732069), 2);
+  assert.strictEqual(buf.indexOf(0x697374657374), 0);
+  assert.strictEqual(buf.indexOf(0x69737374), 0);
+  assert.strictEqual(buf.indexOf(0x69737465), 11);
+  assert.strictEqual(buf.indexOf(0x69737465), 11);
+  assert.strictEqual(buf.indexOf(-140), 0);
+  assert.strictEqual(buf.indexOf(-152), 1);
+  assert.strictEqual(buf.indexOf(0xff), -1);
+  assert.strictEqual(buf.indexOf(0xffff), -1);
+}

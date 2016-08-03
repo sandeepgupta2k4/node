@@ -3241,6 +3241,7 @@ class PropertyCallbackInfo {
 
 typedef void (*FunctionCallback)(const FunctionCallbackInfo<Value>& info);
 
+enum class ConstructorBehavior { kThrow, kAllow };
 
 /**
  * A JavaScript function object (ECMA-262, 15.3).
@@ -3255,6 +3256,11 @@ class V8_EXPORT Function : public Object {
                                   FunctionCallback callback,
                                   Local<Value> data = Local<Value>(),
                                   int length = 0);
+  static MaybeLocal<Function> New(Local<Context> context,
+                                  FunctionCallback callback,
+                                  Local<Value> data,
+                                  int length,
+                                  ConstructorBehavior behavior);
   static V8_DEPRECATE_SOON(
       "Use maybe version",
       Local<Function> New(Isolate* isolate, FunctionCallback callback,
@@ -4478,6 +4484,9 @@ class V8_EXPORT FunctionTemplate : public Template {
       Isolate* isolate, FunctionCallback callback = 0,
       Local<Value> data = Local<Value>(),
       Local<Signature> signature = Local<Signature>(), int length = 0);
+  static Local<FunctionTemplate> New(
+      Isolate* isolate, FunctionCallback callback, Local<Value> data,
+      Local<Signature> signature, int length, ConstructorBehavior behavior);
 
   /**
    * Creates a function template with a fast handler. If a fast handler is set,
@@ -5202,7 +5211,6 @@ class V8_EXPORT HeapStatistics {
   size_t total_available_size() { return total_available_size_; }
   size_t used_heap_size() { return used_heap_size_; }
   size_t heap_size_limit() { return heap_size_limit_; }
-  size_t malloced_memory() { return malloced_memory_; }
   size_t does_zap_garbage() { return does_zap_garbage_; }
 
  private:
@@ -5213,7 +5221,6 @@ class V8_EXPORT HeapStatistics {
   size_t used_heap_size_;
   size_t heap_size_limit_;
   bool does_zap_garbage_;
-  size_t malloced_memory_;
 
   friend class V8;
   friend class Isolate;
