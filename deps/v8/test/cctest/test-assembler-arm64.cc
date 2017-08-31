@@ -33,12 +33,15 @@
 
 #include "src/v8.h"
 
+#include "src/arm64/assembler-arm64-inl.h"
 #include "src/arm64/decoder-arm64-inl.h"
 #include "src/arm64/disasm-arm64.h"
+#include "src/arm64/macro-assembler-arm64-inl.h"
 #include "src/arm64/simulator-arm64.h"
 #include "src/arm64/utils-arm64.h"
 #include "src/base/platform/platform.h"
 #include "src/base/utils/random-number-generator.h"
+#include "src/factory.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-utils-arm64.h"
@@ -170,15 +173,15 @@ static void InitializeVM() {
 
 #else  // ifdef USE_SIMULATOR.
 // Run the test on real hardware or models.
-#define SETUP_SIZE(buf_size)                                   \
-  Isolate* isolate = CcTest::i_isolate();                      \
-  HandleScope scope(isolate);                                  \
-  CHECK(isolate != NULL);                                      \
-  size_t actual_size;                                          \
-  byte* buf = static_cast<byte*>(                              \
-      v8::base::OS::Allocate(buf_size, &actual_size, true));   \
-  MacroAssembler masm(isolate, buf, actual_size,               \
-                      v8::internal::CodeObjectRequired::kYes); \
+#define SETUP_SIZE(buf_size)                                            \
+  Isolate* isolate = CcTest::i_isolate();                               \
+  HandleScope scope(isolate);                                           \
+  CHECK(isolate != NULL);                                               \
+  size_t actual_size;                                                   \
+  byte* buf = static_cast<byte*>(                                       \
+      v8::base::OS::Allocate(buf_size, &actual_size, true));            \
+  MacroAssembler masm(isolate, buf, static_cast<unsigned>(actual_size), \
+                      v8::internal::CodeObjectRequired::kYes);          \
   RegisterDump core;
 
 #define RESET()                                                                \
@@ -838,11 +841,13 @@ TEST(bic) {
   // field.
   // Use x20 to preserve csp. We check for the result via x21 because the
   // test infrastructure requires that csp be restored to its original value.
+  __ SetStackPointer(jssp);  // Change stack pointer to avoid consistency check.
   __ Mov(x20, csp);
   __ Mov(x0, 0xffffff);
   __ Bic(csp, x0, Operand(0xabcdef));
   __ Mov(x21, csp);
   __ Mov(csp, x20);
+  __ SetStackPointer(csp);  // Restore stack pointer.
   END();
 
   RUN();
@@ -3739,6 +3744,77 @@ TEST(add_sub_zero) {
   TEARDOWN();
 }
 
+TEST(preshift_immediates) {
+  INIT_V8();
+  SETUP();
+
+  START();
+  // Test operations involving immediates that could be generated using a
+  // pre-shifted encodable immediate followed by a post-shift applied to
+  // the arithmetic or logical operation.
+
+  // Save csp and change stack pointer to avoid consistency check.
+  __ SetStackPointer(jssp);
+  __ Mov(x29, csp);
+
+  // Set the registers to known values.
+  __ Mov(x0, 0x1000);
+  __ Mov(csp, 0x1000);
+
+  // Arithmetic ops.
+  __ Add(x1, x0, 0x1f7de);
+  __ Add(w2, w0, 0xffffff1);
+  __ Adds(x3, x0, 0x18001);
+  __ Adds(w4, w0, 0xffffff1);
+  __ Add(x5, x0, 0x10100);
+  __ Sub(w6, w0, 0xffffff1);
+  __ Subs(x7, x0, 0x18001);
+  __ Subs(w8, w0, 0xffffff1);
+
+  // Logical ops.
+  __ And(x9, x0, 0x1f7de);
+  __ Orr(w10, w0, 0xffffff1);
+  __ Eor(x11, x0, 0x18001);
+
+  // Ops using the stack pointer.
+  __ Add(csp, csp, 0x1f7f0);
+  __ Mov(x12, csp);
+  __ Mov(csp, 0x1000);
+
+  __ Adds(x13, csp, 0x1f7f0);
+
+  __ Orr(csp, x0, 0x1f7f0);
+  __ Mov(x14, csp);
+  __ Mov(csp, 0x1000);
+
+  __ Add(csp, csp, 0x10100);
+  __ Mov(x15, csp);
+
+  //  Restore csp.
+  __ Mov(csp, x29);
+  __ SetStackPointer(csp);
+  END();
+
+  RUN();
+
+  CHECK_EQUAL_64(0x1000, x0);
+  CHECK_EQUAL_64(0x207de, x1);
+  CHECK_EQUAL_64(0x10000ff1, x2);
+  CHECK_EQUAL_64(0x19001, x3);
+  CHECK_EQUAL_64(0x10000ff1, x4);
+  CHECK_EQUAL_64(0x11100, x5);
+  CHECK_EQUAL_64(0xf000100f, x6);
+  CHECK_EQUAL_64(0xfffffffffffe8fff, x7);
+  CHECK_EQUAL_64(0xf000100f, x8);
+  CHECK_EQUAL_64(0x1000, x9);
+  CHECK_EQUAL_64(0xffffff1, x10);
+  CHECK_EQUAL_64(0x207f0, x12);
+  CHECK_EQUAL_64(0x207f0, x13);
+  CHECK_EQUAL_64(0x1f7f0, x14);
+  CHECK_EQUAL_64(0x11100, x15);
+
+  TEARDOWN();
+}
 
 TEST(claim_drop_zero) {
   INIT_V8();
@@ -3819,6 +3895,375 @@ TEST(neg) {
 }
 
 
+template <typename T, typename Op>
+static void AdcsSbcsHelper(Op op, T left, T right, int carry, T expected,
+                           StatusFlags expected_flags) {
+  int reg_size = sizeof(T) * 8;
+  auto left_reg = Register::Create(0, reg_size);
+  auto right_reg = Register::Create(1, reg_size);
+  auto result_reg = Register::Create(2, reg_size);
+
+  SETUP();
+  START();
+
+  __ Mov(left_reg, left);
+  __ Mov(right_reg, right);
+  __ Mov(x10, (carry ? CFlag : NoFlag));
+
+  __ Msr(NZCV, x10);
+  (masm.*op)(result_reg, left_reg, right_reg);
+
+  END();
+  RUN();
+
+  CHECK_EQUAL_64(left, left_reg.X());
+  CHECK_EQUAL_64(right, right_reg.X());
+  CHECK_EQUAL_64(expected, result_reg.X());
+  CHECK_EQUAL_NZCV(expected_flags);
+
+  TEARDOWN();
+}
+
+
+TEST(adcs_sbcs_x) {
+  INIT_V8();
+  uint64_t inputs[] = {
+      0x0000000000000000, 0x0000000000000001, 0x7ffffffffffffffe,
+      0x7fffffffffffffff, 0x8000000000000000, 0x8000000000000001,
+      0xfffffffffffffffe, 0xffffffffffffffff,
+  };
+  static const size_t input_count = sizeof(inputs) / sizeof(inputs[0]);
+
+  struct Expected {
+    uint64_t carry0_result;
+    StatusFlags carry0_flags;
+    uint64_t carry1_result;
+    StatusFlags carry1_flags;
+  };
+
+  static const Expected expected_adcs_x[input_count][input_count] = {
+      {{0x0000000000000000, ZFlag, 0x0000000000000001, NoFlag},
+       {0x0000000000000001, NoFlag, 0x0000000000000002, NoFlag},
+       {0x7ffffffffffffffe, NoFlag, 0x7fffffffffffffff, NoFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0x8000000000000000, NFlag, 0x8000000000000001, NFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag}},
+      {{0x0000000000000001, NoFlag, 0x0000000000000002, NoFlag},
+       {0x0000000000000002, NoFlag, 0x0000000000000003, NoFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0x8000000000000000, NVFlag, 0x8000000000000001, NVFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0x8000000000000002, NFlag, 0x8000000000000003, NFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag}},
+      {{0x7ffffffffffffffe, NoFlag, 0x7fffffffffffffff, NoFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0xfffffffffffffffc, NVFlag, 0xfffffffffffffffd, NVFlag},
+       {0xfffffffffffffffd, NVFlag, 0xfffffffffffffffe, NVFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x7ffffffffffffffc, CFlag, 0x7ffffffffffffffd, CFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag}},
+      {{0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0x8000000000000000, NVFlag, 0x8000000000000001, NVFlag},
+       {0xfffffffffffffffd, NVFlag, 0xfffffffffffffffe, NVFlag},
+       {0xfffffffffffffffe, NVFlag, 0xffffffffffffffff, NVFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x7ffffffffffffffe, CFlag, 0x7fffffffffffffff, CFlag}},
+      {{0x8000000000000000, NFlag, 0x8000000000000001, NFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x0000000000000000, ZCVFlag, 0x0000000000000001, CVFlag},
+       {0x0000000000000001, CVFlag, 0x0000000000000002, CVFlag},
+       {0x7ffffffffffffffe, CVFlag, 0x7fffffffffffffff, CVFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag}},
+      {{0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0x8000000000000002, NFlag, 0x8000000000000003, NFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0x0000000000000001, CVFlag, 0x0000000000000002, CVFlag},
+       {0x0000000000000002, CVFlag, 0x0000000000000003, CVFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0x8000000000000000, NCFlag, 0x8000000000000001, NCFlag}},
+      {{0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x7ffffffffffffffc, CFlag, 0x7ffffffffffffffd, CFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x7ffffffffffffffe, CVFlag, 0x7fffffffffffffff, CVFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0xfffffffffffffffc, NCFlag, 0xfffffffffffffffd, NCFlag},
+       {0xfffffffffffffffd, NCFlag, 0xfffffffffffffffe, NCFlag}},
+      {{0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x7ffffffffffffffe, CFlag, 0x7fffffffffffffff, CFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0x8000000000000000, NCFlag, 0x8000000000000001, NCFlag},
+       {0xfffffffffffffffd, NCFlag, 0xfffffffffffffffe, NCFlag},
+       {0xfffffffffffffffe, NCFlag, 0xffffffffffffffff, NCFlag}}};
+
+  static const Expected expected_sbcs_x[input_count][input_count] = {
+      {{0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0x8000000000000000, NFlag, 0x8000000000000001, NFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0x7ffffffffffffffe, NoFlag, 0x7fffffffffffffff, NoFlag},
+       {0x0000000000000001, NoFlag, 0x0000000000000002, NoFlag},
+       {0x0000000000000000, ZFlag, 0x0000000000000001, NoFlag}},
+      {{0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x8000000000000002, NFlag, 0x8000000000000003, NFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0x8000000000000000, NVFlag, 0x8000000000000001, NVFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0x0000000000000002, NoFlag, 0x0000000000000003, NoFlag},
+       {0x0000000000000001, NoFlag, 0x0000000000000002, NoFlag}},
+      {{0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x7ffffffffffffffc, CFlag, 0x7ffffffffffffffd, CFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0xfffffffffffffffd, NVFlag, 0xfffffffffffffffe, NVFlag},
+       {0xfffffffffffffffc, NVFlag, 0xfffffffffffffffd, NVFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag},
+       {0x7ffffffffffffffe, NoFlag, 0x7fffffffffffffff, NoFlag}},
+      {{0x7ffffffffffffffe, CFlag, 0x7fffffffffffffff, CFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0xfffffffffffffffe, NVFlag, 0xffffffffffffffff, NVFlag},
+       {0xfffffffffffffffd, NVFlag, 0xfffffffffffffffe, NVFlag},
+       {0x8000000000000000, NVFlag, 0x8000000000000001, NVFlag},
+       {0x7fffffffffffffff, NoFlag, 0x8000000000000000, NVFlag}},
+      {{0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0x7ffffffffffffffe, CVFlag, 0x7fffffffffffffff, CVFlag},
+       {0x0000000000000001, CVFlag, 0x0000000000000002, CVFlag},
+       {0x0000000000000000, ZCVFlag, 0x0000000000000001, CVFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag},
+       {0x8000000000000000, NFlag, 0x8000000000000001, NFlag}},
+      {{0x8000000000000000, NCFlag, 0x8000000000000001, NCFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0x0000000000000002, CVFlag, 0x0000000000000003, CVFlag},
+       {0x0000000000000001, CVFlag, 0x0000000000000002, CVFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0x8000000000000002, NFlag, 0x8000000000000003, NFlag},
+       {0x8000000000000001, NFlag, 0x8000000000000002, NFlag}},
+      {{0xfffffffffffffffd, NCFlag, 0xfffffffffffffffe, NCFlag},
+       {0xfffffffffffffffc, NCFlag, 0xfffffffffffffffd, NCFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0x7ffffffffffffffe, CVFlag, 0x7fffffffffffffff, CVFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x7ffffffffffffffc, CFlag, 0x7ffffffffffffffd, CFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag},
+       {0xfffffffffffffffe, NFlag, 0xffffffffffffffff, NFlag}},
+      {{0xfffffffffffffffe, NCFlag, 0xffffffffffffffff, NCFlag},
+       {0xfffffffffffffffd, NCFlag, 0xfffffffffffffffe, NCFlag},
+       {0x8000000000000000, NCFlag, 0x8000000000000001, NCFlag},
+       {0x7fffffffffffffff, CVFlag, 0x8000000000000000, NCFlag},
+       {0x7ffffffffffffffe, CFlag, 0x7fffffffffffffff, CFlag},
+       {0x7ffffffffffffffd, CFlag, 0x7ffffffffffffffe, CFlag},
+       {0x0000000000000000, ZCFlag, 0x0000000000000001, CFlag},
+       {0xffffffffffffffff, NFlag, 0x0000000000000000, ZCFlag}}};
+
+  for (size_t left = 0; left < input_count; left++) {
+    for (size_t right = 0; right < input_count; right++) {
+      const Expected& expected = expected_adcs_x[left][right];
+      AdcsSbcsHelper(&MacroAssembler::Adcs, inputs[left], inputs[right], 0,
+                     expected.carry0_result, expected.carry0_flags);
+      AdcsSbcsHelper(&MacroAssembler::Adcs, inputs[left], inputs[right], 1,
+                     expected.carry1_result, expected.carry1_flags);
+    }
+  }
+
+  for (size_t left = 0; left < input_count; left++) {
+    for (size_t right = 0; right < input_count; right++) {
+      const Expected& expected = expected_sbcs_x[left][right];
+      AdcsSbcsHelper(&MacroAssembler::Sbcs, inputs[left], inputs[right], 0,
+                     expected.carry0_result, expected.carry0_flags);
+      AdcsSbcsHelper(&MacroAssembler::Sbcs, inputs[left], inputs[right], 1,
+                     expected.carry1_result, expected.carry1_flags);
+    }
+  }
+}
+
+
+TEST(adcs_sbcs_w) {
+  INIT_V8();
+  uint32_t inputs[] = {
+      0x00000000, 0x00000001, 0x7ffffffe, 0x7fffffff,
+      0x80000000, 0x80000001, 0xfffffffe, 0xffffffff,
+  };
+  static const size_t input_count = sizeof(inputs) / sizeof(inputs[0]);
+
+  struct Expected {
+    uint32_t carry0_result;
+    StatusFlags carry0_flags;
+    uint32_t carry1_result;
+    StatusFlags carry1_flags;
+  };
+
+  static const Expected expected_adcs_w[input_count][input_count] = {
+      {{0x00000000, ZFlag, 0x00000001, NoFlag},
+       {0x00000001, NoFlag, 0x00000002, NoFlag},
+       {0x7ffffffe, NoFlag, 0x7fffffff, NoFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0x80000000, NFlag, 0x80000001, NFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag}},
+      {{0x00000001, NoFlag, 0x00000002, NoFlag},
+       {0x00000002, NoFlag, 0x00000003, NoFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0x80000000, NVFlag, 0x80000001, NVFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag},
+       {0x80000002, NFlag, 0x80000003, NFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag}},
+      {{0x7ffffffe, NoFlag, 0x7fffffff, NoFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0xfffffffc, NVFlag, 0xfffffffd, NVFlag},
+       {0xfffffffd, NVFlag, 0xfffffffe, NVFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x7ffffffc, CFlag, 0x7ffffffd, CFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag}},
+      {{0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0x80000000, NVFlag, 0x80000001, NVFlag},
+       {0xfffffffd, NVFlag, 0xfffffffe, NVFlag},
+       {0xfffffffe, NVFlag, 0xffffffff, NVFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x7ffffffe, CFlag, 0x7fffffff, CFlag}},
+      {{0x80000000, NFlag, 0x80000001, NFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x00000000, ZCVFlag, 0x00000001, CVFlag},
+       {0x00000001, CVFlag, 0x00000002, CVFlag},
+       {0x7ffffffe, CVFlag, 0x7fffffff, CVFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag}},
+      {{0x80000001, NFlag, 0x80000002, NFlag},
+       {0x80000002, NFlag, 0x80000003, NFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0x00000001, CVFlag, 0x00000002, CVFlag},
+       {0x00000002, CVFlag, 0x00000003, CVFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0x80000000, NCFlag, 0x80000001, NCFlag}},
+      {{0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x7ffffffc, CFlag, 0x7ffffffd, CFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x7ffffffe, CVFlag, 0x7fffffff, CVFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0xfffffffc, NCFlag, 0xfffffffd, NCFlag},
+       {0xfffffffd, NCFlag, 0xfffffffe, NCFlag}},
+      {{0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x7ffffffe, CFlag, 0x7fffffff, CFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0x80000000, NCFlag, 0x80000001, NCFlag},
+       {0xfffffffd, NCFlag, 0xfffffffe, NCFlag},
+       {0xfffffffe, NCFlag, 0xffffffff, NCFlag}}};
+
+  static const Expected expected_sbcs_w[input_count][input_count] = {
+      {{0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag},
+       {0x80000000, NFlag, 0x80000001, NFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0x7ffffffe, NoFlag, 0x7fffffff, NoFlag},
+       {0x00000001, NoFlag, 0x00000002, NoFlag},
+       {0x00000000, ZFlag, 0x00000001, NoFlag}},
+      {{0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x80000002, NFlag, 0x80000003, NFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag},
+       {0x80000000, NVFlag, 0x80000001, NVFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0x00000002, NoFlag, 0x00000003, NoFlag},
+       {0x00000001, NoFlag, 0x00000002, NoFlag}},
+      {{0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x7ffffffc, CFlag, 0x7ffffffd, CFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0xfffffffd, NVFlag, 0xfffffffe, NVFlag},
+       {0xfffffffc, NVFlag, 0xfffffffd, NVFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag},
+       {0x7ffffffe, NoFlag, 0x7fffffff, NoFlag}},
+      {{0x7ffffffe, CFlag, 0x7fffffff, CFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0xfffffffe, NVFlag, 0xffffffff, NVFlag},
+       {0xfffffffd, NVFlag, 0xfffffffe, NVFlag},
+       {0x80000000, NVFlag, 0x80000001, NVFlag},
+       {0x7fffffff, NoFlag, 0x80000000, NVFlag}},
+      {{0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0x7ffffffe, CVFlag, 0x7fffffff, CVFlag},
+       {0x00000001, CVFlag, 0x00000002, CVFlag},
+       {0x00000000, ZCVFlag, 0x00000001, CVFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag},
+       {0x80000000, NFlag, 0x80000001, NFlag}},
+      {{0x80000000, NCFlag, 0x80000001, NCFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0x00000002, CVFlag, 0x00000003, CVFlag},
+       {0x00000001, CVFlag, 0x00000002, CVFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0x80000002, NFlag, 0x80000003, NFlag},
+       {0x80000001, NFlag, 0x80000002, NFlag}},
+      {{0xfffffffd, NCFlag, 0xfffffffe, NCFlag},
+       {0xfffffffc, NCFlag, 0xfffffffd, NCFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0x7ffffffe, CVFlag, 0x7fffffff, CVFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x7ffffffc, CFlag, 0x7ffffffd, CFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag},
+       {0xfffffffe, NFlag, 0xffffffff, NFlag}},
+      {{0xfffffffe, NCFlag, 0xffffffff, NCFlag},
+       {0xfffffffd, NCFlag, 0xfffffffe, NCFlag},
+       {0x80000000, NCFlag, 0x80000001, NCFlag},
+       {0x7fffffff, CVFlag, 0x80000000, NCFlag},
+       {0x7ffffffe, CFlag, 0x7fffffff, CFlag},
+       {0x7ffffffd, CFlag, 0x7ffffffe, CFlag},
+       {0x00000000, ZCFlag, 0x00000001, CFlag},
+       {0xffffffff, NFlag, 0x00000000, ZCFlag}}};
+
+  for (size_t left = 0; left < input_count; left++) {
+    for (size_t right = 0; right < input_count; right++) {
+      const Expected& expected = expected_adcs_w[left][right];
+      AdcsSbcsHelper(&MacroAssembler::Adcs, inputs[left], inputs[right], 0,
+                     expected.carry0_result, expected.carry0_flags);
+      AdcsSbcsHelper(&MacroAssembler::Adcs, inputs[left], inputs[right], 1,
+                     expected.carry1_result, expected.carry1_flags);
+    }
+  }
+
+  for (size_t left = 0; left < input_count; left++) {
+    for (size_t right = 0; right < input_count; right++) {
+      const Expected& expected = expected_sbcs_w[left][right];
+      AdcsSbcsHelper(&MacroAssembler::Sbcs, inputs[left], inputs[right], 0,
+                     expected.carry0_result, expected.carry0_flags);
+      AdcsSbcsHelper(&MacroAssembler::Sbcs, inputs[left], inputs[right], 1,
+                     expected.carry1_result, expected.carry1_flags);
+    }
+  }
+}
+
+
 TEST(adc_sbc_shift) {
   INIT_V8();
   SETUP();
@@ -3886,132 +4331,6 @@ TEST(adc_sbc_shift) {
   CHECK_EQUAL_32(0xf89abcdd + 1, w25);
   CHECK_EQUAL_32(0x91111110 + 1, w26);
   CHECK_EQUAL_32(0x9a222221 + 1, w27);
-
-  // Check that adc correctly sets the condition flags.
-  START();
-  __ Mov(x0, 1);
-  __ Mov(x1, 0xffffffffffffffffL);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Adcs(x10, x0, Operand(x1));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(ZCFlag);
-  CHECK_EQUAL_64(0, x10);
-
-  START();
-  __ Mov(x0, 1);
-  __ Mov(x1, 0x8000000000000000L);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Adcs(x10, x0, Operand(x1, ASR, 63));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(ZCFlag);
-  CHECK_EQUAL_64(0, x10);
-
-  START();
-  __ Mov(x0, 0x10);
-  __ Mov(x1, 0x07ffffffffffffffL);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Adcs(x10, x0, Operand(x1, LSL, 4));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(NVFlag);
-  CHECK_EQUAL_64(0x8000000000000000L, x10);
-
-  // Check that sbc correctly sets the condition flags.
-  START();
-  __ Mov(x0, 0);
-  __ Mov(x1, 0xffffffffffffffffL);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Sbcs(x10, x0, Operand(x1));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(ZFlag);
-  CHECK_EQUAL_64(0, x10);
-
-  START();
-  __ Mov(x0, 1);
-  __ Mov(x1, 0xffffffffffffffffL);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Sbcs(x10, x0, Operand(x1, LSR, 1));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(NFlag);
-  CHECK_EQUAL_64(0x8000000000000001L, x10);
-
-  START();
-  __ Mov(x0, 0);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Sbcs(x10, x0, Operand(0xffffffffffffffffL));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(ZFlag);
-  CHECK_EQUAL_64(0, x10);
-
-  START()
-  __ Mov(w0, 0x7fffffff);
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Ngcs(w10, w0);
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(NFlag);
-  CHECK_EQUAL_64(0x80000000, x10);
-
-  START();
-  // Clear the C flag.
-  __ Adds(x0, x0, Operand(0));
-  __ Ngcs(x10, 0x7fffffffffffffffL);
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(NFlag);
-  CHECK_EQUAL_64(0x8000000000000000L, x10);
-
-  START()
-  __ Mov(x0, 0);
-  // Set the C flag.
-  __ Cmp(x0, Operand(x0));
-  __ Sbcs(x10, x0, Operand(1));
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(NFlag);
-  CHECK_EQUAL_64(0xffffffffffffffffL, x10);
-
-  START()
-  __ Mov(x0, 0);
-  // Set the C flag.
-  __ Cmp(x0, Operand(x0));
-  __ Ngcs(x10, 0x7fffffffffffffffL);
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_NZCV(NFlag);
-  CHECK_EQUAL_64(0x8000000000000001L, x10);
 
   TEARDOWN();
 }

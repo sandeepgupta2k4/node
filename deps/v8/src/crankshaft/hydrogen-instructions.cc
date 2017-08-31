@@ -5,11 +5,14 @@
 #include "src/crankshaft/hydrogen-instructions.h"
 
 #include "src/base/bits.h"
+#include "src/base/ieee754.h"
 #include "src/base/safe_math.h"
+#include "src/codegen.h"
 #include "src/crankshaft/hydrogen-infer-representation.h"
 #include "src/double.h"
 #include "src/elements.h"
 #include "src/factory.h"
+#include "src/objects-inl.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "src/crankshaft/ia32/lithium-ia32.h"  // NOLINT
@@ -43,6 +46,21 @@ namespace internal {
 HYDROGEN_CONCRETE_INSTRUCTION_LIST(DEFINE_COMPILE)
 #undef DEFINE_COMPILE
 
+Representation RepresentationFromMachineType(MachineType type) {
+  if (type == MachineType::Int32()) {
+    return Representation::Integer32();
+  }
+
+  if (type == MachineType::TaggedSigned()) {
+    return Representation::Smi();
+  }
+
+  if (type == MachineType::Pointer()) {
+    return Representation::External();
+  }
+
+  return Representation::Tagged();
+}
 
 Isolate* HValue::isolate() const {
   DCHECK(block() != NULL);
@@ -258,7 +276,11 @@ bool Range::AddAndCheckOverflow(const Representation& r, Range* other) {
   bool may_overflow = false;
   lower_ = AddWithoutOverflow(r, lower_, other->lower(), &may_overflow);
   upper_ = AddWithoutOverflow(r, upper_, other->upper(), &may_overflow);
-  KeepOrder();
+  if (may_overflow) {
+    Clear();
+  } else {
+    KeepOrder();
+  }
 #ifdef DEBUG
   Verify();
 #endif
@@ -270,13 +292,21 @@ bool Range::SubAndCheckOverflow(const Representation& r, Range* other) {
   bool may_overflow = false;
   lower_ = SubWithoutOverflow(r, lower_, other->upper(), &may_overflow);
   upper_ = SubWithoutOverflow(r, upper_, other->lower(), &may_overflow);
-  KeepOrder();
+  if (may_overflow) {
+    Clear();
+  } else {
+    KeepOrder();
+  }
 #ifdef DEBUG
   Verify();
 #endif
   return may_overflow;
 }
 
+void Range::Clear() {
+  lower_ = kMinInt;
+  upper_ = kMaxInt;
+}
 
 void Range::KeepOrder() {
   if (lower_ > upper_) {
@@ -300,8 +330,12 @@ bool Range::MulAndCheckOverflow(const Representation& r, Range* other) {
   int v2 = MulWithoutOverflow(r, lower_, other->upper(), &may_overflow);
   int v3 = MulWithoutOverflow(r, upper_, other->lower(), &may_overflow);
   int v4 = MulWithoutOverflow(r, upper_, other->upper(), &may_overflow);
-  lower_ = Min(Min(v1, v2), Min(v3, v4));
-  upper_ = Max(Max(v1, v2), Max(v3, v4));
+  if (may_overflow) {
+    Clear();
+  } else {
+    lower_ = Min(Min(v1, v2), Min(v3, v4));
+    upper_ = Max(Max(v1, v2), Max(v3, v4));
+  }
 #ifdef DEBUG
   Verify();
 #endif
@@ -784,29 +818,22 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kCompareNumericAndBranch:
     case HValue::kCompareObjectEqAndBranch:
     case HValue::kConstant:
-    case HValue::kConstructDouble:
     case HValue::kContext:
     case HValue::kDebugBreak:
     case HValue::kDeclareGlobals:
-    case HValue::kDoubleBits:
     case HValue::kDummyUse:
     case HValue::kEnterInlined:
     case HValue::kEnvironmentMarker:
     case HValue::kForceRepresentation:
-    case HValue::kGetCachedArrayIndex:
     case HValue::kGoto:
-    case HValue::kHasCachedArrayIndexAndBranch:
     case HValue::kHasInstanceTypeAndBranch:
     case HValue::kInnerAllocatedObject:
-    case HValue::kInstanceOf:
     case HValue::kIsSmiAndBranch:
     case HValue::kIsStringAndBranch:
     case HValue::kIsUndetectableAndBranch:
     case HValue::kLeaveInlined:
     case HValue::kLoadFieldByIndex:
-    case HValue::kLoadGlobalGeneric:
     case HValue::kLoadNamedField:
-    case HValue::kLoadNamedGeneric:
     case HValue::kLoadRoot:
     case HValue::kMathMinMax:
     case HValue::kParameter:
@@ -817,7 +844,6 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kStoreCodeEntry:
     case HValue::kStoreKeyed:
     case HValue::kStoreNamedField:
-    case HValue::kStoreNamedGeneric:
     case HValue::kStringCharCodeAt:
     case HValue::kStringCharFromCode:
     case HValue::kThisFunction:
@@ -851,7 +877,6 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kLoadContextSlot:
     case HValue::kLoadFunctionPrototype:
     case HValue::kLoadKeyed:
-    case HValue::kLoadKeyedGeneric:
     case HValue::kMathFloorOfDiv:
     case HValue::kMaybeGrowElements:
     case HValue::kMod:
@@ -867,7 +892,6 @@ bool HInstruction::CanDeoptimize() {
     case HValue::kSimulate:
     case HValue::kStackCheck:
     case HValue::kStoreContextSlot:
-    case HValue::kStoreKeyedGeneric:
     case HValue::kStringAdd:
     case HValue::kStringCompareAndBranch:
     case HValue::kSub:
@@ -1002,13 +1026,11 @@ std::ostream& HCallRuntime::PrintDataTo(std::ostream& os) const {  // NOLINT
   return os << "#" << argument_count();
 }
 
-
 std::ostream& HClassOfTestAndBranch::PrintDataTo(
     std::ostream& os) const {  // NOLINT
   return os << "class_of_test(" << NameOf(value()) << ", \""
             << class_name()->ToCString().get() << "\")";
 }
-
 
 std::ostream& HWrapReceiver::PrintDataTo(std::ostream& os) const {  // NOLINT
   return os << NameOf(receiver()) << " " << NameOf(function());
@@ -1049,23 +1071,21 @@ std::ostream& HReturn::PrintDataTo(std::ostream& os) const {  // NOLINT
 
 
 Representation HBranch::observed_input_representation(int index) {
-  if (expected_input_types_.Contains(ToBooleanICStub::NULL_TYPE) ||
-      expected_input_types_.Contains(ToBooleanICStub::SPEC_OBJECT) ||
-      expected_input_types_.Contains(ToBooleanICStub::STRING) ||
-      expected_input_types_.Contains(ToBooleanICStub::SYMBOL) ||
-      expected_input_types_.Contains(ToBooleanICStub::SIMD_VALUE)) {
+  if (expected_input_types_ &
+      (ToBooleanHint::kNull | ToBooleanHint::kReceiver |
+       ToBooleanHint::kString | ToBooleanHint::kSymbol)) {
     return Representation::Tagged();
   }
-  if (expected_input_types_.Contains(ToBooleanICStub::UNDEFINED)) {
-    if (expected_input_types_.Contains(ToBooleanICStub::HEAP_NUMBER)) {
+  if (expected_input_types_ & ToBooleanHint::kUndefined) {
+    if (expected_input_types_ & ToBooleanHint::kHeapNumber) {
       return Representation::Double();
     }
     return Representation::Tagged();
   }
-  if (expected_input_types_.Contains(ToBooleanICStub::HEAP_NUMBER)) {
+  if (expected_input_types_ & ToBooleanHint::kHeapNumber) {
     return Representation::Double();
   }
-  if (expected_input_types_.Contains(ToBooleanICStub::SMI)) {
+  if (expected_input_types_ & ToBooleanHint::kSmallInteger) {
     return Representation::Smi();
   }
   return Representation::None();
@@ -1115,10 +1135,14 @@ const char* HUnaryMathOperation::OpName() const {
       return "round";
     case kMathAbs:
       return "abs";
+    case kMathCos:
+      return "cos";
     case kMathLog:
       return "log";
     case kMathExp:
       return "exp";
+    case kMathSin:
+      return "sin";
     case kMathSqrt:
       return "sqrt";
     case kMathPowHalf:
@@ -1219,17 +1243,6 @@ String* TypeOfString(HConstant* constant, Isolate* isolate) {
     }
     case SYMBOL_TYPE:
       return heap->symbol_string();
-    case SIMD128_VALUE_TYPE: {
-      Unique<Map> map = constant->ObjectMap();
-#define SIMD128_TYPE(TYPE, Type, type, lane_count, lane_type) \
-  if (map.IsKnownGlobal(heap->type##_map())) {                \
-    return heap->type##_string();                             \
-  }
-      SIMD128_TYPES(SIMD128_TYPE)
-#undef SIMD128_TYPE
-      UNREACHABLE();
-      return nullptr;
-    }
     default:
       if (constant->IsUndetectable()) return heap->undefined_string();
       if (constant->IsCallable()) return heap->function_string();
@@ -1467,8 +1480,8 @@ std::ostream& HChange::PrintDataTo(std::ostream& os) const {  // NOLINT
 
   if (CanTruncateToSmi()) os << " truncating-smi";
   if (CanTruncateToInt32()) os << " truncating-int32";
+  if (CanTruncateToNumber()) os << " truncating-number";
   if (CheckFlag(kBailoutOnMinusZero)) os << " -0?";
-  if (CheckFlag(kAllowUndefinedAsNaN)) os << " allow-undefined-as-nan";
   return os;
 }
 
@@ -1479,8 +1492,8 @@ HValue* HUnaryMathOperation::Canonicalize() {
     if (val->IsChange()) val = HChange::cast(val)->value();
     if (val->representation().IsSmiOrInteger32()) {
       if (val->representation().Equals(representation())) return val;
-      return Prepend(new(block()->zone()) HChange(
-          val, representation(), false, false));
+      return Prepend(new (block()->zone())
+                         HChange(val, representation(), false, false, true));
     }
   }
   if (op() == kMathFloor && representation().IsSmiOrInteger32() &&
@@ -1495,8 +1508,8 @@ HValue* HUnaryMathOperation::Canonicalize() {
       // A change from an integer32 can be replaced by the integer32 value.
       left = HChange::cast(left)->value();
     } else if (hdiv->observed_input_representation(1).IsSmiOrInteger32()) {
-      left = Prepend(new(block()->zone()) HChange(
-          left, Representation::Integer32(), false, false));
+      left = Prepend(new (block()->zone()) HChange(
+          left, Representation::Integer32(), false, false, true));
     } else {
       return this;
     }
@@ -1514,8 +1527,8 @@ HValue* HUnaryMathOperation::Canonicalize() {
       // A change from an integer32 can be replaced by the integer32 value.
       right = HChange::cast(right)->value();
     } else if (hdiv->observed_input_representation(2).IsSmiOrInteger32()) {
-      right = Prepend(new(block()->zone()) HChange(
-          right, Representation::Integer32(), false, false));
+      right = Prepend(new (block()->zone()) HChange(
+          right, Representation::Integer32(), false, false, true));
     } else {
       return this;
     }
@@ -1553,6 +1566,9 @@ void HCheckInstanceType::GetCheckInterval(InstanceType* first,
       return;
     case IS_JS_ARRAY:
       *first = *last = JS_ARRAY_TYPE;
+      return;
+    case IS_JS_FUNCTION:
+      *first = *last = JS_FUNCTION_TYPE;
       return;
     case IS_JS_DATE:
       *first = *last = JS_DATE_TYPE;
@@ -1626,6 +1642,8 @@ const char* HCheckInstanceType::GetCheckName() const {
   switch (check_) {
     case IS_JS_RECEIVER: return "object";
     case IS_JS_ARRAY: return "array";
+    case IS_JS_FUNCTION:
+      return "function";
     case IS_JS_DATE:
       return "date";
     case IS_STRING: return "string";
@@ -1649,12 +1667,6 @@ std::ostream& HUnknownOSRValue::PrintDataTo(std::ostream& os) const {  // NOLINT
   if (environment_->is_special_index(index_)) type = "special";
   if (environment_->is_parameter_index(index_)) type = "parameter";
   return os << type << " @ " << index_;
-}
-
-
-std::ostream& HInstanceOf::PrintDataTo(std::ostream& os) const {  // NOLINT
-  return os << NameOf(left()) << " " << NameOf(right()) << " "
-            << NameOf(context());
 }
 
 
@@ -2153,6 +2165,11 @@ HConstant::HConstant(Special special)
                  InstanceTypeField::encode(kUnknownInstanceType)),
       int32_value_(0) {
   DCHECK_EQ(kHoleNaN, special);
+  // Manipulating the signaling NaN used for the hole in C++, e.g. with bit_cast
+  // will change its value on ia32 (the x87 stack is used to return values
+  // and stores to the stack silently clear the signalling bit).
+  // Therefore we have to use memcpy for initializing |double_value_| with
+  // kHoleNanInt64 here.
   std::memcpy(&double_value_, &kHoleNanInt64, sizeof(double_value_));
   Initialize(Representation::Double());
 }
@@ -2171,6 +2188,32 @@ HConstant::HConstant(Handle<Object> object, Representation r)
           BooleanValueField::encode(object->BooleanValue()) |
           IsUndetectableField::encode(false) | IsCallableField::encode(false) |
           InstanceTypeField::encode(kUnknownInstanceType)) {
+  if (object->IsNumber()) {
+    double n = object->Number();
+    bool has_int32_value = IsInteger32(n);
+    bit_field_ = HasInt32ValueField::update(bit_field_, has_int32_value);
+    int32_value_ = DoubleToInt32(n);
+    bit_field_ = HasSmiValueField::update(
+        bit_field_, has_int32_value && Smi::IsValid(int32_value_));
+    if (std::isnan(n)) {
+      double_value_ = std::numeric_limits<double>::quiet_NaN();
+      // Canonicalize object with NaN value.
+      DCHECK(object->IsHeapObject());  // NaN can't be a Smi.
+      Isolate* isolate = HeapObject::cast(*object)->GetIsolate();
+      object = isolate->factory()->nan_value();
+      object_ = Unique<Object>::CreateUninitialized(object);
+    } else {
+      double_value_ = n;
+      // Canonicalize object with -0.0 value.
+      if (bit_cast<int64_t>(n) == bit_cast<int64_t>(-0.0)) {
+        DCHECK(object->IsHeapObject());  // -0.0 can't be a Smi.
+        Isolate* isolate = HeapObject::cast(*object)->GetIsolate();
+        object = isolate->factory()->minus_zero_value();
+        object_ = Unique<Object>::CreateUninitialized(object);
+      }
+    }
+    bit_field_ = HasDoubleValueField::update(bit_field_, true);
+  }
   if (object->IsHeapObject()) {
     Handle<HeapObject> heap_object = Handle<HeapObject>::cast(object);
     Isolate* isolate = heap_object->GetIsolate();
@@ -2185,16 +2228,6 @@ HConstant::HConstant(Handle<Object> object, Representation r)
     bit_field_ = HasStableMapValueField::update(
         bit_field_,
         HasMapValue() && Handle<Map>::cast(heap_object)->is_stable());
-  }
-  if (object->IsNumber()) {
-    double n = object->Number();
-    bool has_int32_value = IsInteger32(n);
-    bit_field_ = HasInt32ValueField::update(bit_field_, has_int32_value);
-    int32_value_ = DoubleToInt32(n);
-    bit_field_ = HasSmiValueField::update(
-        bit_field_, has_int32_value && Smi::IsValid(int32_value_));
-    double_value_ = n;
-    bit_field_ = HasDoubleValueField::update(bit_field_, true);
   }
 
   Initialize(r);
@@ -2246,7 +2279,6 @@ HConstant::HConstant(int32_t integer_value, Representation r,
   Initialize(r);
 }
 
-
 HConstant::HConstant(double double_value, Representation r,
                      bool is_not_in_new_space, Unique<Object> object)
     : object_(object),
@@ -2260,8 +2292,7 @@ HConstant::HConstant(double double_value, Representation r,
                                            !std::isnan(double_value)) |
                  IsUndetectableField::encode(false) |
                  InstanceTypeField::encode(kUnknownInstanceType)),
-      int32_value_(DoubleToInt32(double_value)),
-      double_value_(double_value) {
+      int32_value_(DoubleToInt32(double_value)) {
   bit_field_ = HasSmiValueField::update(
       bit_field_, HasInteger32Value() && Smi::IsValid(int32_value_));
   // It's possible to create a constant with a value in Smi-range but stored
@@ -2269,6 +2300,11 @@ HConstant::HConstant(double double_value, Representation r,
   bool could_be_heapobject = r.IsTagged() && !object.handle().is_null();
   bool is_smi = HasSmiValue() && !could_be_heapobject;
   set_type(is_smi ? HType::Smi() : HType::TaggedNumber());
+  if (std::isnan(double_value)) {
+    double_value_ = std::numeric_limits<double>::quiet_NaN();
+  } else {
+    double_value_ = double_value;
+  }
   Initialize(r);
 }
 
@@ -2419,9 +2455,9 @@ Maybe<HConstant*> HConstant::CopyToTruncatedNumber(Isolate* isolate,
   if (handle->IsBoolean()) {
     res = handle->BooleanValue() ?
       new(zone) HConstant(1) : new(zone) HConstant(0);
-  } else if (handle->IsUndefined()) {
+  } else if (handle->IsUndefined(isolate)) {
     res = new (zone) HConstant(std::numeric_limits<double>::quiet_NaN());
-  } else if (handle->IsNull()) {
+  } else if (handle->IsNull(isolate)) {
     res = new(zone) HConstant(0);
   } else if (handle->IsString()) {
     res = new(zone) HConstant(String::ToNumber(Handle<String>::cast(handle)));
@@ -2837,7 +2873,7 @@ void HCompareNumericAndBranch::InferRepresentation(
     // comparisons must cause a deopt when one of their arguments is undefined.
     // See also v8:1434
     if (Token::IsOrderedRelationalCompareOp(token_)) {
-      SetFlag(kAllowUndefinedAsNaN);
+      SetFlag(kTruncatingToNumber);
     }
   }
   ChangeRepresentation(rep);
@@ -2862,13 +2898,6 @@ std::ostream& HLoadNamedField::PrintDataTo(std::ostream& os) const {  // NOLINT
 
   if (HasDependency()) os << " " << NameOf(dependency());
   return os;
-}
-
-
-std::ostream& HLoadNamedGeneric::PrintDataTo(
-    std::ostream& os) const {  // NOLINT
-  Handle<String> n = Handle<String>::cast(name());
-  return os << NameOf(object()) << "." << n->ToCString().get();
 }
 
 
@@ -2943,7 +2972,7 @@ bool HLoadKeyed::UsesMustHandleHole() const {
 
 bool HLoadKeyed::AllUsesCanTreatHoleAsNaN() const {
   return IsFastDoubleElementsKind(elements_kind()) &&
-      CheckUsesForFlag(HValue::kAllowUndefinedAsNaN);
+         CheckUsesForFlag(HValue::kTruncatingToNumber);
 }
 
 
@@ -2963,53 +2992,39 @@ bool HLoadKeyed::RequiresHoleCheck() const {
   return !UsesMustHandleHole();
 }
 
+HValue* HCallWithDescriptor::Canonicalize() {
+  if (kind() != Code::KEYED_LOAD_IC) return this;
 
-std::ostream& HLoadKeyedGeneric::PrintDataTo(
-    std::ostream& os) const {  // NOLINT
-  return os << NameOf(object()) << "[" << NameOf(key()) << "]";
-}
-
-
-HValue* HLoadKeyedGeneric::Canonicalize() {
   // Recognize generic keyed loads that use property name generated
   // by for-in statement as a key and rewrite them into fast property load
   // by index.
-  if (key()->IsLoadKeyed()) {
-    HLoadKeyed* key_load = HLoadKeyed::cast(key());
+  typedef LoadWithVectorDescriptor Descriptor;
+  HValue* key = parameter(Descriptor::kName);
+  if (key->IsLoadKeyed()) {
+    HLoadKeyed* key_load = HLoadKeyed::cast(key);
     if (key_load->elements()->IsForInCacheArray()) {
       HForInCacheArray* names_cache =
           HForInCacheArray::cast(key_load->elements());
 
-      if (names_cache->enumerable() == object()) {
+      HValue* object = parameter(Descriptor::kReceiver);
+      if (names_cache->enumerable() == object) {
         HForInCacheArray* index_cache =
             names_cache->index_cache();
         HCheckMapValue* map_check = HCheckMapValue::New(
             block()->graph()->isolate(), block()->graph()->zone(),
-            block()->graph()->GetInvalidContext(), object(),
-            names_cache->map());
+            block()->graph()->GetInvalidContext(), object, names_cache->map());
         HInstruction* index = HLoadKeyed::New(
             block()->graph()->isolate(), block()->graph()->zone(),
             block()->graph()->GetInvalidContext(), index_cache, key_load->key(),
             key_load->key(), nullptr, key_load->elements_kind());
         map_check->InsertBefore(this);
         index->InsertBefore(this);
-        return Prepend(new(block()->zone()) HLoadFieldByIndex(
-            object(), index));
+        return Prepend(new (block()->zone()) HLoadFieldByIndex(object, index));
       }
     }
   }
-
   return this;
 }
-
-
-std::ostream& HStoreNamedGeneric::PrintDataTo(
-    std::ostream& os) const {  // NOLINT
-  Handle<String> n = Handle<String>::cast(name());
-  return os << NameOf(object()) << "." << n->ToCString().get() << " = "
-            << NameOf(value());
-}
-
 
 std::ostream& HStoreNamedField::PrintDataTo(std::ostream& os) const {  // NOLINT
   os << NameOf(object()) << access_ << " = " << NameOf(value());
@@ -3034,13 +3049,6 @@ std::ostream& HStoreKeyed::PrintDataTo(std::ostream& os) const {  // NOLINT
 }
 
 
-std::ostream& HStoreKeyedGeneric::PrintDataTo(
-    std::ostream& os) const {  // NOLINT
-  return os << NameOf(object()) << "[" << NameOf(key())
-            << "] = " << NameOf(value());
-}
-
-
 std::ostream& HTransitionElementsKind::PrintDataTo(
     std::ostream& os) const {  // NOLINT
   os << NameOf(object());
@@ -3052,12 +3060,6 @@ std::ostream& HTransitionElementsKind::PrintDataTo(
      << ElementsAccessor::ForKind(to_kind)->name() << "]";
   if (IsSimpleMapChangeTransition(from_kind, to_kind)) os << " (simple)";
   return os;
-}
-
-
-std::ostream& HLoadGlobalGeneric::PrintDataTo(
-    std::ostream& os) const {  // NOLINT
-  return os << name()->ToCString().get() << " ";
 }
 
 
@@ -3126,6 +3128,7 @@ Representation HUnaryMathOperation::RepresentationFromInputs() {
 bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
                                           HValue* dominator) {
   DCHECK(side_effect == kNewSpacePromotion);
+  DCHECK(!IsAllocationFolded());
   Zone* zone = block()->zone();
   Isolate* isolate = block()->isolate();
   if (!FLAG_use_allocation_folding) return false;
@@ -3153,7 +3156,8 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
   HValue* current_size = size();
 
   // TODO(hpayer): Add support for non-constant allocation in dominator.
-  if (!dominator_size->IsInteger32Constant()) {
+  if (!current_size->IsInteger32Constant() ||
+      !dominator_size->IsInteger32Constant()) {
     if (FLAG_trace_allocation_folding) {
       PrintF("#%d (%s) cannot fold into #%d (%s), "
              "dynamic allocation size in dominator\n",
@@ -3162,6 +3166,13 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
     return false;
   }
 
+  if (IsAllocationFoldingDominator()) {
+    if (FLAG_trace_allocation_folding) {
+      PrintF("#%d (%s) cannot fold into #%d (%s), already dominator\n", id(),
+             Mnemonic(), dominator->id(), dominator->Mnemonic());
+    }
+    return false;
+  }
 
   if (!IsFoldable(dominator_allocate)) {
     if (FLAG_trace_allocation_folding) {
@@ -3169,32 +3180,6 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
              Mnemonic(), dominator->id(), dominator->Mnemonic());
     }
     return false;
-  }
-
-  if (!has_size_upper_bound()) {
-    if (FLAG_trace_allocation_folding) {
-      PrintF("#%d (%s) cannot fold into #%d (%s), "
-             "can't estimate total allocation size\n",
-          id(), Mnemonic(), dominator->id(), dominator->Mnemonic());
-    }
-    return false;
-  }
-
-  if (!current_size->IsInteger32Constant()) {
-    // If it's not constant then it is a size_in_bytes calculation graph
-    // like this: (const_header_size + const_element_size * size).
-    DCHECK(current_size->IsInstruction());
-
-    HInstruction* current_instr = HInstruction::cast(current_size);
-    if (!current_instr->Dominates(dominator_allocate)) {
-      if (FLAG_trace_allocation_folding) {
-        PrintF("#%d (%s) cannot fold into #%d (%s), dynamic size "
-               "value does not dominate target allocation\n",
-            id(), Mnemonic(), dominator_allocate->id(),
-            dominator_allocate->Mnemonic());
-      }
-      return false;
-    }
   }
 
   DCHECK(
@@ -3213,12 +3198,12 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
     }
   }
 
-  int32_t current_size_max_value = size_upper_bound()->GetInteger32Constant();
+  int32_t current_size_max_value = size()->GetInteger32Constant();
   int32_t new_dominator_size = dominator_size_constant + current_size_max_value;
 
   // Since we clear the first word after folded memory, we cannot use the
-  // whole Page::kMaxRegularHeapObjectSize memory.
-  if (new_dominator_size > Page::kMaxRegularHeapObjectSize - kPointerSize) {
+  // whole kMaxRegularHeapObjectSize memory.
+  if (new_dominator_size > kMaxRegularHeapObjectSize - kPointerSize) {
     if (FLAG_trace_allocation_folding) {
       PrintF("#%d (%s) cannot fold into #%d (%s) due to size: %d\n",
           id(), Mnemonic(), dominator_allocate->id(),
@@ -3227,27 +3212,9 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
     return false;
   }
 
-  HInstruction* new_dominator_size_value;
-
-  if (current_size->IsInteger32Constant()) {
-    new_dominator_size_value = HConstant::CreateAndInsertBefore(
-        isolate, zone, context(), new_dominator_size, Representation::None(),
-        dominator_allocate);
-  } else {
-    HValue* new_dominator_size_constant = HConstant::CreateAndInsertBefore(
-        isolate, zone, context(), dominator_size_constant,
-        Representation::Integer32(), dominator_allocate);
-
-    // Add old and new size together and insert.
-    current_size->ChangeRepresentation(Representation::Integer32());
-
-    new_dominator_size_value = HAdd::New(
-        isolate, zone, context(), new_dominator_size_constant, current_size);
-    new_dominator_size_value->ClearFlag(HValue::kCanOverflow);
-    new_dominator_size_value->ChangeRepresentation(Representation::Integer32());
-
-    new_dominator_size_value->InsertBefore(dominator_allocate);
-  }
+  HInstruction* new_dominator_size_value = HConstant::CreateAndInsertBefore(
+      isolate, zone, context(), new_dominator_size, Representation::None(),
+      dominator_allocate);
 
   dominator_allocate->UpdateSize(new_dominator_size_value);
 
@@ -3257,100 +3224,31 @@ bool HAllocate::HandleSideEffectDominator(GVNFlag side_effect,
     }
   }
 
-  bool keep_heap_iterable = FLAG_log_gc || FLAG_heap_stats;
-#ifdef VERIFY_HEAP
-  keep_heap_iterable = keep_heap_iterable || FLAG_verify_heap;
-#endif
-
-  if (keep_heap_iterable) {
-    dominator_allocate->MakePrefillWithFiller();
-  } else {
-    // TODO(hpayer): This is a short-term hack to make allocation mementos
-    // work again in new space.
-    dominator_allocate->ClearNextMapWord(original_object_size);
+  if (!dominator_allocate->IsAllocationFoldingDominator()) {
+    HAllocate* first_alloc =
+        HAllocate::New(isolate, zone, dominator_allocate->context(),
+                       dominator_size, dominator_allocate->type(),
+                       IsNewSpaceAllocation() ? NOT_TENURED : TENURED,
+                       JS_OBJECT_TYPE, block()->graph()->GetConstant0());
+    first_alloc->InsertAfter(dominator_allocate);
+    dominator_allocate->ReplaceAllUsesWith(first_alloc);
+    dominator_allocate->MakeAllocationFoldingDominator();
+    first_alloc->MakeFoldedAllocation(dominator_allocate);
+    if (FLAG_trace_allocation_folding) {
+      PrintF("#%d (%s) inserted for dominator #%d (%s)\n", first_alloc->id(),
+             first_alloc->Mnemonic(), dominator_allocate->id(),
+             dominator_allocate->Mnemonic());
+    }
   }
 
-  dominator_allocate->UpdateClearNextMapWord(MustClearNextMapWord());
+  MakeFoldedAllocation(dominator_allocate);
 
-  // After that replace the dominated allocate instruction.
-  HInstruction* inner_offset = HConstant::CreateAndInsertBefore(
-      isolate, zone, context(), dominator_size_constant, Representation::None(),
-      this);
-
-  HInstruction* dominated_allocate_instr = HInnerAllocatedObject::New(
-      isolate, zone, context(), dominator_allocate, inner_offset, type());
-  dominated_allocate_instr->InsertBefore(this);
-  DeleteAndReplaceWith(dominated_allocate_instr);
   if (FLAG_trace_allocation_folding) {
-    PrintF("#%d (%s) folded into #%d (%s)\n",
-        id(), Mnemonic(), dominator_allocate->id(),
-        dominator_allocate->Mnemonic());
+    PrintF("#%d (%s) folded into #%d (%s), new dominator size: %d\n", id(),
+           Mnemonic(), dominator_allocate->id(), dominator_allocate->Mnemonic(),
+           new_dominator_size);
   }
   return true;
-}
-
-
-void HAllocate::UpdateFreeSpaceFiller(int32_t free_space_size) {
-  DCHECK(filler_free_space_size_ != NULL);
-  Zone* zone = block()->zone();
-  // We must explicitly force Smi representation here because on x64 we
-  // would otherwise automatically choose int32, but the actual store
-  // requires a Smi-tagged value.
-  HConstant* new_free_space_size = HConstant::CreateAndInsertBefore(
-      block()->isolate(), zone, context(),
-      filler_free_space_size_->value()->GetInteger32Constant() +
-          free_space_size,
-      Representation::Smi(), filler_free_space_size_);
-  filler_free_space_size_->UpdateValue(new_free_space_size);
-}
-
-
-void HAllocate::CreateFreeSpaceFiller(int32_t free_space_size) {
-  DCHECK(filler_free_space_size_ == NULL);
-  Isolate* isolate = block()->isolate();
-  Zone* zone = block()->zone();
-  HInstruction* free_space_instr =
-      HInnerAllocatedObject::New(isolate, zone, context(), dominating_allocate_,
-                                 dominating_allocate_->size(), type());
-  free_space_instr->InsertBefore(this);
-  HConstant* filler_map = HConstant::CreateAndInsertAfter(
-      zone, Unique<Map>::CreateImmovable(isolate->factory()->free_space_map()),
-      true, free_space_instr);
-  HInstruction* store_map =
-      HStoreNamedField::New(isolate, zone, context(), free_space_instr,
-                            HObjectAccess::ForMap(), filler_map);
-  store_map->SetFlag(HValue::kHasNoObservableSideEffects);
-  store_map->InsertAfter(filler_map);
-
-  // We must explicitly force Smi representation here because on x64 we
-  // would otherwise automatically choose int32, but the actual store
-  // requires a Smi-tagged value.
-  HConstant* filler_size =
-      HConstant::CreateAndInsertAfter(isolate, zone, context(), free_space_size,
-                                      Representation::Smi(), store_map);
-  // Must force Smi representation for x64 (see comment above).
-  HObjectAccess access = HObjectAccess::ForMapAndOffset(
-      isolate->factory()->free_space_map(), FreeSpace::kSizeOffset,
-      Representation::Smi());
-  HStoreNamedField* store_size = HStoreNamedField::New(
-      isolate, zone, context(), free_space_instr, access, filler_size);
-  store_size->SetFlag(HValue::kHasNoObservableSideEffects);
-  store_size->InsertAfter(filler_size);
-  filler_free_space_size_ = store_size;
-}
-
-
-void HAllocate::ClearNextMapWord(int offset) {
-  if (MustClearNextMapWord()) {
-    Zone* zone = block()->zone();
-    HObjectAccess access =
-        HObjectAccess::ForObservableJSObjectOffset(offset);
-    HStoreNamedField* clear_next_map =
-        HStoreNamedField::New(block()->isolate(), zone, context(), this, access,
-                              block()->graph()->GetConstant0());
-    clear_next_map->ClearAllSideEffects();
-    clear_next_map->InsertAfter(this);
-  }
 }
 
 
@@ -3360,6 +3258,8 @@ std::ostream& HAllocate::PrintDataTo(std::ostream& os) const {  // NOLINT
   if (IsOldSpaceAllocation()) os << "P";
   if (MustAllocateDoubleAligned()) os << "A";
   if (MustPrefillWithFiller()) os << "F";
+  if (IsAllocationFoldingDominator()) os << "d";
+  if (IsAllocationFolded()) os << "f";
   return os << ")";
 }
 
@@ -3387,13 +3287,11 @@ bool HStoreKeyed::NeedsCanonicalization() {
       Representation from = HChange::cast(value())->from();
       return from.IsTagged() || from.IsHeapObject();
     }
-    case kLoadNamedField:
-    case kPhi: {
-      // Better safe than sorry...
-      return true;
-    }
-    default:
+    case kConstant:
+      // Double constants are canonicalized upon construction.
       return false;
+    default:
+      return !value()->IsBinaryOperation();
   }
 }
 
@@ -3502,6 +3400,9 @@ HInstruction* HUnaryMathOperation::New(Isolate* isolate, Zone* zone,
     }
     if (std::isinf(d)) {  // +Infinity and -Infinity.
       switch (op) {
+        case kMathCos:
+        case kMathSin:
+          return H_CONSTANT_DOUBLE(std::numeric_limits<double>::quiet_NaN());
         case kMathExp:
           return H_CONSTANT_DOUBLE((d > 0.0) ? d : 0.0);
         case kMathLog:
@@ -3523,11 +3424,14 @@ HInstruction* HUnaryMathOperation::New(Isolate* isolate, Zone* zone,
       }
     }
     switch (op) {
+      case kMathCos:
+        return H_CONSTANT_DOUBLE(base::ieee754::cos(d));
       case kMathExp:
-        lazily_initialize_fast_exp(isolate);
-        return H_CONSTANT_DOUBLE(fast_exp(d, isolate));
+        return H_CONSTANT_DOUBLE(base::ieee754::exp(d));
       case kMathLog:
-        return H_CONSTANT_DOUBLE(std::log(d));
+        return H_CONSTANT_DOUBLE(base::ieee754::log(d));
+      case kMathSin:
+        return H_CONSTANT_DOUBLE(base::ieee754::sin(d));
       case kMathSqrt:
         lazily_initialize_fast_sqrt(isolate);
         return H_CONSTANT_DOUBLE(fast_sqrt(d, isolate));
@@ -3675,16 +3579,21 @@ HInstruction* HDiv::New(Isolate* isolate, Zone* zone, HValue* context,
     HConstant* c_left = HConstant::cast(left);
     HConstant* c_right = HConstant::cast(right);
     if ((c_left->HasNumberValue() && c_right->HasNumberValue())) {
-      if (c_right->DoubleValue() != 0) {
+      if (std::isnan(c_left->DoubleValue()) ||
+          std::isnan(c_right->DoubleValue())) {
+        return H_CONSTANT_DOUBLE(std::numeric_limits<double>::quiet_NaN());
+      } else if (c_right->DoubleValue() != 0) {
         double double_res = c_left->DoubleValue() / c_right->DoubleValue();
         if (IsInt32Double(double_res)) {
           return H_CONSTANT_INT(double_res);
         }
         return H_CONSTANT_DOUBLE(double_res);
-      } else {
+      } else if (c_left->DoubleValue() != 0) {
         int sign = Double(c_left->DoubleValue()).Sign() *
                    Double(c_right->DoubleValue()).Sign();  // Right could be -0.
         return H_CONSTANT_DOUBLE(sign * V8_INFINITY);
+      } else {
+        return H_CONSTANT_DOUBLE(std::numeric_limits<double>::quiet_NaN());
       }
     }
   }

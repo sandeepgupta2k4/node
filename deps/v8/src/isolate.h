@@ -5,31 +5,28 @@
 #ifndef V8_ISOLATE_H_
 #define V8_ISOLATE_H_
 
+#include <memory>
 #include <queue>
-#include <set>
 
 #include "include/v8-debug.h"
 #include "src/allocation.h"
-#include "src/assert-scope.h"
-#include "src/base/accounting-allocator.h"
 #include "src/base/atomicops.h"
-#include "src/builtins.h"
-#include "src/cancelable-task.h"
+#include "src/builtins/builtins.h"
 #include "src/contexts.h"
 #include "src/date.h"
+#include "src/debug/debug-interface.h"
 #include "src/execution.h"
 #include "src/frames.h"
 #include "src/futex-emulation.h"
 #include "src/global-handles.h"
 #include "src/handles.h"
-#include "src/hashmap.h"
 #include "src/heap/heap.h"
 #include "src/messages.h"
-#include "src/optimizing-compile-dispatcher.h"
 #include "src/regexp/regexp-stack.h"
-#include "src/runtime-profiler.h"
 #include "src/runtime/runtime.h"
-#include "src/zone.h"
+#include "src/zone/zone.h"
+
+class TestIsolate;
 
 namespace v8 {
 
@@ -37,29 +34,41 @@ namespace base {
 class RandomNumberGenerator;
 }
 
+namespace debug {
+class ConsoleDelegate;
+}
+
 namespace internal {
 
+class AccessCompilerData;
+class AddressToIndexHashMap;
+class AstStringConstants;
 class BasicBlockProfiler;
 class Bootstrapper;
+class CancelableTaskManager;
 class CallInterfaceDescriptorData;
+class CodeAgingHelper;
+class CodeEventDispatcher;
 class CodeGenerator;
 class CodeRange;
 class CodeStubDescriptor;
 class CodeTracer;
 class CompilationCache;
+class CompilerDispatcher;
 class CompilationStatistics;
 class ContextSlotCache;
 class Counters;
 class CpuFeatures;
 class CpuProfiler;
 class DeoptimizerData;
+class DescriptorLookupCache;
 class Deserializer;
 class EmptyStatement;
 class ExternalCallbackScope;
 class ExternalReferenceTable;
 class Factory;
-class FunctionInfoListener;
 class HandleScopeImplementer;
+class HeapObjectToIndexHashMap;
 class HeapProfiler;
 class HStatistics;
 class HTracer;
@@ -67,9 +76,12 @@ class InlineRuntimeFunctionsTable;
 class InnerPointerToCodeCache;
 class Logger;
 class MaterializedObjectStore;
-class CodeAgingHelper;
+class OptimizingCompileDispatcher;
 class RegExpStack;
+class RootVisitor;
+class RuntimeProfiler;
 class SaveContext;
+class SetupIsolateDelegate;
 class StatsTable;
 class StringTracker;
 class StubCache;
@@ -95,14 +107,6 @@ namespace interpreter {
 class Interpreter;
 }
 
-// Static indirection table for handles to constants.  If a frame
-// element represents a constant, the data contains an index into
-// this table of handles to the actual constants.
-// Static indirection table for handles to constants.  If a Result
-// represents a constant, the data contains an index into this table
-// of handles to the actual constants.
-typedef ZoneList<Handle<Object> > ZoneObjectList;
-
 #define RETURN_FAILURE_IF_SCHEDULED_EXCEPTION(isolate)    \
   do {                                                    \
     Isolate* __isolate__ = (isolate);                     \
@@ -125,6 +129,17 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
 #define RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, T) \
   RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<T>())
 
+#define RETURN_RESULT_OR_FAILURE(isolate, call)     \
+  do {                                              \
+    Handle<Object> __result__;                      \
+    Isolate* __isolate__ = (isolate);               \
+    if (!(call).ToHandle(&__result__)) {            \
+      DCHECK(__isolate__->has_pending_exception()); \
+      return __isolate__->heap()->exception();      \
+    }                                               \
+    return *__result__;                             \
+  } while (false)
+
 #define ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, dst, call, value)  \
   do {                                                               \
     if (!(call).ToHandle(&dst)) {                                    \
@@ -133,21 +148,26 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
     }                                                                \
   } while (false)
 
-#define ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, dst, call)  \
-  ASSIGN_RETURN_ON_EXCEPTION_VALUE(                             \
-      isolate, dst, call, isolate->heap()->exception())
+#define ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, dst, call)          \
+  do {                                                                  \
+    Isolate* __isolate__ = (isolate);                                   \
+    ASSIGN_RETURN_ON_EXCEPTION_VALUE(__isolate__, dst, call,            \
+                                     __isolate__->heap()->exception()); \
+  } while (false)
 
 #define ASSIGN_RETURN_ON_EXCEPTION(isolate, dst, call, T)  \
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, dst, call, MaybeHandle<T>())
 
-#define THROW_NEW_ERROR(isolate, call, T)               \
-  do {                                                  \
-    return isolate->Throw<T>(isolate->factory()->call); \
+#define THROW_NEW_ERROR(isolate, call, T)                       \
+  do {                                                          \
+    Isolate* __isolate__ = (isolate);                           \
+    return __isolate__->Throw<T>(__isolate__->factory()->call); \
   } while (false)
 
-#define THROW_NEW_ERROR_RETURN_FAILURE(isolate, call) \
-  do {                                                \
-    return isolate->Throw(*isolate->factory()->call); \
+#define THROW_NEW_ERROR_RETURN_FAILURE(isolate, call)         \
+  do {                                                        \
+    Isolate* __isolate__ = (isolate);                         \
+    return __isolate__->Throw(*__isolate__->factory()->call); \
   } while (false)
 
 #define RETURN_ON_EXCEPTION_VALUE(isolate, call, value)            \
@@ -158,8 +178,12 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
     }                                                              \
   } while (false)
 
-#define RETURN_FAILURE_ON_EXCEPTION(isolate, call)  \
-  RETURN_ON_EXCEPTION_VALUE(isolate, call, isolate->heap()->exception())
+#define RETURN_FAILURE_ON_EXCEPTION(isolate, call)               \
+  do {                                                           \
+    Isolate* __isolate__ = (isolate);                            \
+    RETURN_ON_EXCEPTION_VALUE(__isolate__, call,                 \
+                              __isolate__->heap()->exception()); \
+  } while (false);
 
 #define RETURN_ON_EXCEPTION(isolate, call, T)  \
   RETURN_ON_EXCEPTION_VALUE(isolate, call, MaybeHandle<T>())
@@ -236,7 +260,7 @@ class ThreadId {
 
   static int AllocateThreadId();
 
-  static int GetCurrentThreadId();
+  V8_EXPORT_PRIVATE static int GetCurrentThreadId();
 
   base::Atomic32 id_;
 
@@ -340,9 +364,9 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #if USE_SIMULATOR
 
-#define ISOLATE_INIT_SIMULATOR_LIST(V)                                         \
-  V(bool, simulator_initialized, false)                                        \
-  V(HashMap*, simulator_i_cache, NULL)                                         \
+#define ISOLATE_INIT_SIMULATOR_LIST(V)                    \
+  V(bool, simulator_initialized, false)                   \
+  V(base::CustomMatcherHashMap*, simulator_i_cache, NULL) \
   V(Redirection*, simulator_redirection, NULL)
 #else
 
@@ -353,10 +377,10 @@ class ThreadLocalTop BASE_EMBEDDED {
 
 #ifdef DEBUG
 
-#define ISOLATE_INIT_DEBUG_ARRAY_LIST(V)                                       \
-  V(CommentStatistic, paged_space_comments_statistics,                         \
-      CommentStatistic::kMaxComments + 1)                                      \
-  V(int, code_kind_statistics, Code::NUMBER_OF_KINDS)
+#define ISOLATE_INIT_DEBUG_ARRAY_LIST(V)               \
+  V(CommentStatistic, paged_space_comments_statistics, \
+    CommentStatistic::kMaxComments + 1)                \
+  V(int, code_kind_statistics, AbstractCode::NUMBER_OF_KINDS)
 #else
 
 #define ISOLATE_INIT_DEBUG_ARRAY_LIST(V)
@@ -369,38 +393,49 @@ class ThreadLocalTop BASE_EMBEDDED {
   V(int, bad_char_shift_table, kUC16AlphabetSize)                              \
   V(int, good_suffix_shift_table, (kBMMaxShift + 1))                           \
   V(int, suffix_table, (kBMMaxShift + 1))                                      \
-  V(uint32_t, private_random_seed, 2)                                          \
   ISOLATE_INIT_DEBUG_ARRAY_LIST(V)
 
-typedef List<HeapObject*> DebugObjectCache;
+typedef std::vector<HeapObject*> DebugObjectCache;
 
-#define ISOLATE_INIT_LIST(V)                                                   \
-  /* Assembler state. */                                                       \
-  V(FatalErrorCallback, exception_behavior, NULL)                              \
-  V(LogEventCallback, event_logger, NULL)                                      \
-  V(AllowCodeGenerationFromStringsCallback, allow_code_gen_callback, NULL)     \
-  /* To distinguish the function templates, so that we can find them in the */ \
-  /* function cache of the native context. */                                  \
-  V(int, next_serial_number, 0)                                                \
-  V(ExternalReferenceRedirectorPointer*, external_reference_redirector, NULL)  \
-  /* Part of the state of liveedit. */                                         \
-  V(FunctionInfoListener*, active_function_info_listener, NULL)                \
-  /* State for Relocatable. */                                                 \
-  V(Relocatable*, relocatable_top, NULL)                                       \
-  V(DebugObjectCache*, string_stream_debug_object_cache, NULL)                 \
-  V(Object*, string_stream_current_security_token, NULL)                       \
-  V(ExternalReferenceTable*, external_reference_table, NULL)                   \
-  V(HashMap*, external_reference_map, NULL)                                    \
-  V(HashMap*, root_index_map, NULL)                                            \
-  V(int, pending_microtask_count, 0)                                           \
-  V(HStatistics*, hstatistics, NULL)                                           \
-  V(CompilationStatistics*, turbo_statistics, NULL)                            \
-  V(HTracer*, htracer, NULL)                                                   \
-  V(CodeTracer*, code_tracer, NULL)                                            \
-  V(bool, fp_stubs_generated, false)                                           \
-  V(uint32_t, per_isolate_assert_data, 0xFFFFFFFFu)                            \
-  V(PromiseRejectCallback, promise_reject_callback, NULL)                      \
-  V(const v8::StartupData*, snapshot_blob, NULL)                               \
+#define ISOLATE_INIT_LIST(V)                                                  \
+  /* Assembler state. */                                                      \
+  V(FatalErrorCallback, exception_behavior, nullptr)                          \
+  V(OOMErrorCallback, oom_behavior, nullptr)                                  \
+  V(LogEventCallback, event_logger, nullptr)                                  \
+  V(AllowCodeGenerationFromStringsCallback, allow_code_gen_callback, nullptr) \
+  V(ExtensionCallback, wasm_module_callback, &NoExtension)                    \
+  V(ExtensionCallback, wasm_instance_callback, &NoExtension)                  \
+  V(ExtensionCallback, wasm_compile_callback, &NoExtension)                   \
+  V(ExtensionCallback, wasm_instantiate_callback, &NoExtension)               \
+  V(ExternalReferenceRedirectorPointer*, external_reference_redirector,       \
+    nullptr)                                                                  \
+  /* State for Relocatable. */                                                \
+  V(Relocatable*, relocatable_top, nullptr)                                   \
+  V(DebugObjectCache*, string_stream_debug_object_cache, nullptr)             \
+  V(Object*, string_stream_current_security_token, nullptr)                   \
+  V(ExternalReferenceTable*, external_reference_table, nullptr)               \
+  V(intptr_t*, api_external_references, nullptr)                              \
+  V(AddressToIndexHashMap*, external_reference_map, nullptr)                  \
+  V(HeapObjectToIndexHashMap*, root_index_map, nullptr)                       \
+  V(int, pending_microtask_count, 0)                                          \
+  V(HStatistics*, hstatistics, nullptr)                                       \
+  V(CompilationStatistics*, turbo_statistics, nullptr)                        \
+  V(HTracer*, htracer, nullptr)                                               \
+  V(CodeTracer*, code_tracer, nullptr)                                        \
+  V(uint32_t, per_isolate_assert_data, 0xFFFFFFFFu)                           \
+  V(PromiseRejectCallback, promise_reject_callback, nullptr)                  \
+  V(const v8::StartupData*, snapshot_blob, nullptr)                           \
+  V(int, code_and_metadata_size, 0)                                           \
+  V(int, bytecode_and_metadata_size, 0)                                       \
+  /* true if being profiled. Causes collection of extra compile info. */      \
+  V(bool, is_profiling, false)                                                \
+  /* true if a trace is being formatted through Error.prepareStackTrace. */   \
+  V(bool, formatting_stack_trace, false)                                      \
+  /* Perform side effect checks on function call and API callbacks. */        \
+  V(bool, needs_side_effect_check, false)                                     \
+  /* Current code coverage mode */                                            \
+  V(debug::Coverage::Mode, code_coverage_mode, debug::Coverage::kBestEffort)  \
+  V(int, last_stack_frame_info_id, 0)                                         \
   ISOLATE_INIT_SIMULATOR_LIST(V)
 
 #define THREAD_LOCAL_TOP_ACCESSOR(type, name)                        \
@@ -495,14 +530,6 @@ class Isolate {
     return isolate;
   }
 
-  // Like Current, but skips the check that |isolate_key_| was initialized.
-  // Callers have to ensure that themselves.
-  // DO NOT USE. The only remaining callsite will be deleted soon.
-  INLINE(static Isolate* UnsafeCurrent()) {
-    return reinterpret_cast<Isolate*>(
-        base::Thread::GetThreadLocal(isolate_key_));
-  }
-
   // Usually called by Init(), but can be called early e.g. to allow
   // testing components that require logging but not the whole
   // isolate.
@@ -519,6 +546,8 @@ class Isolate {
   // Sets default isolate into "has_been_disposed" state rather then destroying,
   // for legacy API reasons.
   void TearDown();
+
+  void ReleaseManagedObjects();
 
   static void GlobalTearDown();
 
@@ -604,6 +633,7 @@ class Isolate {
   bool IsExternalHandlerOnTop(Object* exception);
 
   inline bool is_catchable_by_javascript(Object* exception);
+  inline bool is_catchable_by_wasm(Object* exception);
 
   // JS execution stack (see frames.h).
   static Address c_entry_fp(ThreadLocalTop* thread) {
@@ -633,9 +663,7 @@ class Isolate {
   inline Handle<JSGlobalObject> global_object();
 
   // Returns the global proxy object of the current context.
-  JSObject* global_proxy() {
-    return context()->global_proxy();
-  }
+  inline Handle<JSObject> global_proxy();
 
   static int ArchiveSpacePerThread() { return sizeof(ThreadLocalTop); }
   void FreeThreadResources() { thread_local_top_.Free(); }
@@ -644,12 +672,18 @@ class Isolate {
   // exceptions.  If an exception was thrown and not handled by an external
   // handler the exception is scheduled to be rethrown when we return to running
   // JavaScript code.  If an exception is scheduled true is returned.
-  bool OptionalRescheduleException(bool is_bottom_call);
+  V8_EXPORT_PRIVATE bool OptionalRescheduleException(bool is_bottom_call);
 
   // Push and pop a promise and the current try-catch handler.
-  void PushPromise(Handle<JSObject> promise, Handle<JSFunction> function);
+  void PushPromise(Handle<JSObject> promise);
   void PopPromise();
+
+  // Return the relevant Promise that a throw/rejection pertains to, based
+  // on the contents of the Promise stack
   Handle<Object> GetPromiseOnStackOnThrow();
+
+  // Heuristically guess whether a Promise is handled by user catch handler
+  bool PromiseHasUserDefinedRejectHandler(Handle<Object> promise);
 
   class ExceptionScope {
    public:
@@ -677,20 +711,29 @@ class Isolate {
                   PrintStackMode mode = kPrintStackVerbose);
   void PrintStack(FILE* out, PrintStackMode mode = kPrintStackVerbose);
   Handle<String> StackTraceString();
-  NO_INLINE(void PushStackTraceAndDie(unsigned int magic, void* ptr1,
+  // Stores a stack trace in a stack-allocated temporary buffer which will
+  // end up in the minidump for debugging purposes.
+  NO_INLINE(void PushStackTraceAndDie(unsigned int magic1, void* ptr1,
                                       void* ptr2, unsigned int magic2));
-  Handle<JSArray> CaptureCurrentStackTrace(
-      int frame_limit,
-      StackTrace::StackTraceOptions options);
+  NO_INLINE(void PushStackTraceAndDie(unsigned int magic1, void* ptr1,
+                                      void* ptr2, void* ptr3, void* ptr4,
+                                      void* ptr5, void* ptr6, void* ptr7,
+                                      void* ptr8, unsigned int magic2));
+  NO_INLINE(void PushCodeObjectsAndDie(unsigned int magic, void* ptr1,
+                                       void* ptr2, void* ptr3, void* ptr4,
+                                       void* ptr5, void* ptr6, void* ptr7,
+                                       void* ptr8, unsigned int magic2));
+  Handle<FixedArray> CaptureCurrentStackTrace(
+      int frame_limit, StackTrace::StackTraceOptions options);
   Handle<Object> CaptureSimpleStackTrace(Handle<JSReceiver> error_object,
+                                         FrameSkipMode mode,
                                          Handle<Object> caller);
   MaybeHandle<JSReceiver> CaptureAndSetDetailedStackTrace(
       Handle<JSReceiver> error_object);
   MaybeHandle<JSReceiver> CaptureAndSetSimpleStackTrace(
-      Handle<JSReceiver> error_object, Handle<Object> caller);
-  Handle<JSArray> GetDetailedStackTrace(Handle<JSObject> error_object);
-  Handle<JSArray> GetDetailedFromSimpleStackTrace(
-      Handle<JSObject> error_object);
+      Handle<JSReceiver> error_object, FrameSkipMode mode,
+      Handle<Object> caller);
+  Handle<FixedArray> GetDetailedStackTrace(Handle<JSObject> error_object);
 
   // Returns if the given context may access the given global object. If
   // the result is false, the pending exception is guaranteed to be
@@ -712,6 +755,11 @@ class Isolate {
     return MaybeHandle<T>();
   }
 
+  void set_console_delegate(debug::ConsoleDelegate* delegate) {
+    console_delegate_ = delegate;
+  }
+  debug::ConsoleDelegate* console_delegate() { return console_delegate_; }
+
   // Re-throw an exception.  This involves no error reporting since error
   // reporting was handled when the exception was thrown originally.
   Object* ReThrow(Object* exception);
@@ -722,9 +770,15 @@ class Isolate {
 
   // Tries to predict whether an exception will be caught. Note that this can
   // only produce an estimate, because it is undecidable whether a finally
-  // clause will consume or re-throw an exception. We conservatively assume any
-  // finally clause will behave as if the exception were consumed.
-  enum CatchType { NOT_CAUGHT, CAUGHT_BY_JAVASCRIPT, CAUGHT_BY_EXTERNAL };
+  // clause will consume or re-throw an exception.
+  enum CatchType {
+    NOT_CAUGHT,
+    CAUGHT_BY_JAVASCRIPT,
+    CAUGHT_BY_EXTERNAL,
+    CAUGHT_BY_DESUGARING,
+    CAUGHT_BY_PROMISE,
+    CAUGHT_BY_ASYNC_AWAIT
+  };
   CatchType PredictExceptionCatcher();
 
   void ScheduleThrow(Object* exception);
@@ -741,7 +795,9 @@ class Isolate {
   Object* PromoteScheduledException();
 
   // Attempts to compute the current source location, storing the
-  // result in the target out parameter.
+  // result in the target out parameter. The source location is attached to a
+  // Message object as the location which should be shown to the user. It's
+  // typically the top-most meaningful location on the stack.
   bool ComputeLocation(MessageLocation* target);
   bool ComputeLocationFromException(MessageLocation* target,
                                     Handle<Object> exception);
@@ -760,13 +816,14 @@ class Isolate {
   void InvokeApiInterruptCallbacks();
 
   // Administration
-  void Iterate(ObjectVisitor* v);
-  void Iterate(ObjectVisitor* v, ThreadLocalTop* t);
-  char* Iterate(ObjectVisitor* v, char* t);
+  void Iterate(RootVisitor* v);
+  void Iterate(RootVisitor* v, ThreadLocalTop* t);
+  char* Iterate(RootVisitor* v, char* t);
   void IterateThread(ThreadVisitor* v, char* t);
 
   // Returns the current native context.
-  Handle<Context> native_context();
+  inline Handle<Context> native_context();
+  inline Context* raw_native_context();
 
   // Returns the native context of the calling JavaScript code.  That
   // is, the native context of the top-most JavaScript frame.
@@ -777,8 +834,6 @@ class Isolate {
 
   char* ArchiveThread(char* to);
   char* RestoreThread(char* from);
-
-  static const char* const kStackOverflowMessage;
 
   static const int kUC16AlphabetSize = 256;  // See StringSearchBase.
   static const int kBMMaxShift = 250;        // See StringSearchBase.
@@ -817,7 +872,6 @@ class Isolate {
     DCHECK(counters_ != NULL);
     return counters_;
   }
-  CodeRange* code_range() { return code_range_; }
   RuntimeProfiler* runtime_profiler() { return runtime_profiler_; }
   CompilationCache* compilation_cache() { return compilation_cache_; }
   Logger* logger() {
@@ -829,7 +883,8 @@ class Isolate {
   StackGuard* stack_guard() { return &stack_guard_; }
   Heap* heap() { return &heap_; }
   StatsTable* stats_table();
-  StubCache* stub_cache() { return stub_cache_; }
+  StubCache* load_stub_cache() { return load_stub_cache_; }
+  StubCache* store_stub_cache() { return store_stub_cache_; }
   CodeAgingHelper* code_aging_helper() { return code_aging_helper_; }
   DeoptimizerData* deoptimizer_data() { return deoptimizer_data_; }
   bool deoptimizer_lazy_throw() const { return deoptimizer_lazy_throw_; }
@@ -839,14 +894,6 @@ class Isolate {
   ThreadLocalTop* thread_local_top() { return &thread_local_top_; }
   MaterializedObjectStore* materialized_object_store() {
     return materialized_object_store_;
-  }
-
-  MemoryAllocator* memory_allocator() {
-    return memory_allocator_;
-  }
-
-  KeyedLookupCache* keyed_lookup_cache() {
-    return keyed_lookup_cache_;
   }
 
   ContextSlotCache* context_slot_cache() {
@@ -863,8 +910,6 @@ class Isolate {
     DCHECK(handle_scope_implementer_);
     return handle_scope_implementer_;
   }
-  Zone* runtime_zone() { return &runtime_zone_; }
-  Zone* interface_descriptor_zone() { return &interface_descriptor_zone_; }
 
   UnicodeCache* unicode_cache() {
     return unicode_cache_;
@@ -892,18 +937,19 @@ class Isolate {
 
   Builtins* builtins() { return &builtins_; }
 
-  void NotifyExtensionInstalled() {
-    has_installed_extensions_ = true;
-  }
-
-  bool has_installed_extensions() { return has_installed_extensions_; }
-
   unibrow::Mapping<unibrow::Ecma262Canonicalize>*
       regexp_macro_assembler_canonicalize() {
     return &regexp_macro_assembler_canonicalize_;
   }
 
   RegExpStack* regexp_stack() { return regexp_stack_; }
+
+  size_t total_regexp_code_generated() { return total_regexp_code_generated_; }
+  void IncreaseTotalRegexpCodeGenerated(int size) {
+    total_regexp_code_generated_ += size;
+  }
+
+  List<int>* regexp_indices() { return &regexp_indices_; }
 
   unibrow::Mapping<unibrow::Ecma262Canonicalize>*
       interp_canonicalize_mapping() {
@@ -912,7 +958,10 @@ class Isolate {
 
   Debug* debug() { return debug_; }
 
-  CpuProfiler* cpu_profiler() const { return cpu_profiler_; }
+  bool* is_profiling_address() { return &is_profiling_; }
+  CodeEventDispatcher* code_event_dispatcher() const {
+    return code_event_dispatcher_.get();
+  }
   HeapProfiler* heap_profiler() const { return heap_profiler_; }
 
 #ifdef DEBUG
@@ -948,9 +997,25 @@ class Isolate {
   bool IsDead() { return has_fatal_error_; }
   void SignalFatalError() { has_fatal_error_ = true; }
 
-  bool use_crankshaft() const;
+  bool use_optimizer();
 
   bool initialized_from_snapshot() { return initialized_from_snapshot_; }
+
+  bool NeedsSourcePositionsForProfiling() const;
+
+  bool is_best_effort_code_coverage() const {
+    return code_coverage_mode() == debug::Coverage::kBestEffort;
+  }
+
+  bool is_precise_count_code_coverage() const {
+    return code_coverage_mode() == debug::Coverage::kPreciseCount;
+  }
+
+  bool is_precise_binary_code_coverage() const {
+    return code_coverage_mode() == debug::Coverage::kPreciseBinary;
+  }
+
+  void SetCodeCoverageList(Object* value);
 
   double time_millis_since_init() {
     return heap_.MonotonicallyIncreasingTimeInMs() - time_millis_at_init_;
@@ -969,11 +1034,21 @@ class Isolate {
 
   Map* get_initial_js_array_map(ElementsKind kind);
 
-  static const int kArrayProtectorValid = 1;
-  static const int kArrayProtectorInvalid = 0;
+  static const int kProtectorValid = 1;
+  static const int kProtectorInvalid = 0;
 
   bool IsFastArrayConstructorPrototypeChainIntact();
   inline bool IsArraySpeciesLookupChainIntact();
+  bool IsIsConcatSpreadableLookupChainIntact();
+  bool IsIsConcatSpreadableLookupChainIntact(JSReceiver* receiver);
+  inline bool IsStringLengthOverflowIntact();
+  inline bool IsArrayIteratorLookupChainIntact();
+
+  // Avoid deopt loops if fast Array Iterators migrate to slow Array Iterators.
+  inline bool IsFastArrayIterationIntact();
+
+  // Make sure we do check for neutered array buffers.
+  inline bool IsArrayBufferNeuteringIntact();
 
   // On intent to set an element in object, make sure that appropriate
   // notifications occur if the set is on the elements of the array or
@@ -990,13 +1065,20 @@ class Isolate {
     UpdateArrayProtectorOnSetElement(object);
   }
   void InvalidateArraySpeciesProtector();
+  void InvalidateIsConcatSpreadableProtector();
+  void InvalidateStringLengthOverflowProtector();
+  void InvalidateArrayIteratorProtector();
+  void InvalidateArrayBufferNeuteringProtector();
 
   // Returns true if array is the initial array prototype in any native context.
   bool IsAnyInitialArrayPrototype(Handle<JSArray> array);
 
-  CallInterfaceDescriptorData* call_descriptor_data(int index);
+  V8_EXPORT_PRIVATE CallInterfaceDescriptorData* call_descriptor_data(
+      int index);
 
-  void IterateDeferredHandles(ObjectVisitor* visitor);
+  AccessCompilerData* access_compiler_data() { return access_compiler_data_; }
+
+  void IterateDeferredHandles(RootVisitor* visitor);
   void LinkDeferredHandles(DeferredHandles* deferred_handles);
   void UnlinkDeferredHandles(DeferredHandles* deferred_handles);
 
@@ -1022,7 +1104,7 @@ class Isolate {
   HTracer* GetHTracer();
   CodeTracer* GetCodeTracer();
 
-  void DumpAndResetCompilationStats();
+  void DumpAndResetStats();
 
   FunctionEntryHook function_entry_hook() { return function_entry_hook_; }
   void set_function_entry_hook(FunctionEntryHook function_entry_hook) {
@@ -1031,16 +1113,14 @@ class Isolate {
 
   void* stress_deopt_count_address() { return &stress_deopt_count_; }
 
-  void* virtual_handler_register_address() {
-    return &virtual_handler_register_;
-  }
+  V8_EXPORT_PRIVATE base::RandomNumberGenerator* random_number_generator();
 
-  void* virtual_slot_register_address() { return &virtual_slot_register_; }
-
-  base::RandomNumberGenerator* random_number_generator();
+  // Generates a random number that is non-zero when masked
+  // with the provided mask.
+  int GenerateIdentityHash(uint32_t mask);
 
   // Given an address occupied by a live code object, return that object.
-  Object* FindCodeObject(Address a);
+  Code* FindCodeObject(Address a);
 
   int NextOptimizationId() {
     int id = next_optimization_id_++;
@@ -1050,22 +1130,13 @@ class Isolate {
     return id;
   }
 
-  void IncrementJsCallsFromApiCounter() { ++js_calls_from_api_counter_; }
-
-  unsigned int js_calls_from_api_counter() {
-    return js_calls_from_api_counter_;
-  }
-
-  // Get (and lazily initialize) the registry for per-isolate symbols.
-  Handle<JSObject> GetSymbolRegistry();
-
   void AddCallCompletedCallback(CallCompletedCallback callback);
   void RemoveCallCompletedCallback(CallCompletedCallback callback);
   void FireCallCompletedCallback();
 
   void AddBeforeCallEnteredCallback(BeforeCallEnteredCallback callback);
   void RemoveBeforeCallEnteredCallback(BeforeCallEnteredCallback callback);
-  void FireBeforeCallEnteredCallback();
+  inline void FireBeforeCallEnteredCallback();
 
   void AddMicrotasksCompletedCallback(MicrotasksCompletedCallback callback);
   void RemoveMicrotasksCompletedCallback(MicrotasksCompletedCallback callback);
@@ -1075,8 +1146,18 @@ class Isolate {
   void ReportPromiseReject(Handle<JSObject> promise, Handle<Object> value,
                            v8::PromiseRejectEvent event);
 
+  void PromiseReactionJob(Handle<PromiseReactionJobInfo> info,
+                          MaybeHandle<Object>* result,
+                          MaybeHandle<Object>* maybe_exception);
+  void PromiseResolveThenableJob(Handle<PromiseResolveThenableJobInfo> info,
+                                 MaybeHandle<Object>* result,
+                                 MaybeHandle<Object>* maybe_exception);
   void EnqueueMicrotask(Handle<Object> microtask);
   void RunMicrotasks();
+  bool IsRunningMicrotasks() const { return is_running_microtasks_; }
+
+  Handle<Symbol> SymbolFor(Heap::RootListIndex dictionary_index,
+                           Handle<String> name, bool private_symbol);
 
   void SetUseCounterCallback(v8::Isolate::UseCounterCallback callback);
   void CountUsage(v8::Isolate::UseCounterFeature feature);
@@ -1086,9 +1167,19 @@ class Isolate {
 
   std::string GetTurboCfgFileName();
 
-#if TRACE_MAPS
+#if V8_SFI_HAS_UNIQUE_ID
   int GetNextUniqueSharedFunctionInfoId() { return next_unique_sfi_id_++; }
 #endif
+
+  Address promise_hook_or_debug_is_active_address() {
+    return reinterpret_cast<Address>(&promise_hook_or_debug_is_active_);
+  }
+
+  void DebugStateUpdated();
+
+  void SetPromiseHook(PromiseHook hook);
+  void RunPromiseHook(PromiseHookType type, Handle<JSPromise> promise,
+                      Handle<Object> parent);
 
   // Support for dynamically disabling tail call elimination.
   Address is_tail_call_elimination_enabled_address() {
@@ -1117,18 +1208,101 @@ class Isolate {
     return cancelable_task_manager_;
   }
 
+  const AstStringConstants* ast_string_constants() const {
+    return ast_string_constants_;
+  }
+
   interpreter::Interpreter* interpreter() const { return interpreter_; }
 
-  base::AccountingAllocator* allocator() { return &allocator_; }
+  AccountingAllocator* allocator() { return allocator_; }
+
+  CompilerDispatcher* compiler_dispatcher() const {
+    return compiler_dispatcher_;
+  }
+
+  // Clear all optimized code stored in native contexts.
+  void ClearOSROptimizedCode();
+
+  // Ensure that a particular optimized code is evicted.
+  void EvictOSROptimizedCode(Code* code, const char* reason);
+
+  bool IsInAnyContext(Object* object, uint32_t index);
+
+  void SetHostImportModuleDynamicallyCallback(
+      HostImportModuleDynamicallyCallback callback);
+  void RunHostImportModuleDynamicallyCallback(Handle<String> referrer,
+                                              Handle<String> specifier,
+                                              Handle<JSPromise> promise);
+
+  void SetRAILMode(RAILMode rail_mode);
+
+  RAILMode rail_mode() { return rail_mode_.Value(); }
+
+  double LoadStartTimeMs();
+
+  void IsolateInForegroundNotification();
+
+  void IsolateInBackgroundNotification();
+
+  bool IsIsolateInBackground() { return is_isolate_in_background_; }
+
+  PRINTF_FORMAT(2, 3) void PrintWithTimestamp(const char* format, ...);
+
+#ifdef USE_SIMULATOR
+  base::Mutex* simulator_i_cache_mutex() { return &simulator_i_cache_mutex_; }
+  base::Mutex* simulator_redirection_mutex() {
+    return &simulator_redirection_mutex_;
+  }
+#endif
+
+  void set_allow_atomics_wait(bool set) { allow_atomics_wait_ = set; }
+  bool allow_atomics_wait() { return allow_atomics_wait_; }
+
+  // List of native heap values allocated by the runtime as part of its
+  // implementation that must be freed at isolate deinit.
+  class ManagedObjectFinalizer final {
+   public:
+    typedef void (*Deleter)(void*);
+    void Dispose() { deleter_(value_); }
+
+   private:
+    friend class Isolate;
+
+    ManagedObjectFinalizer() {
+      DCHECK_EQ(reinterpret_cast<void*>(this),
+                reinterpret_cast<void*>(&value_));
+    }
+
+    // value_ must be the first member
+    void* value_ = nullptr;
+    Deleter deleter_ = nullptr;
+    ManagedObjectFinalizer* prev_ = nullptr;
+    ManagedObjectFinalizer* next_ = nullptr;
+  };
+
+  // Register a native value for destruction at isolate teardown.
+  ManagedObjectFinalizer* RegisterForReleaseAtTeardown(
+      void* value, ManagedObjectFinalizer::Deleter deleter);
+
+  // Unregister a previously registered value from release at
+  // isolate teardown, deleting the ManagedObjectFinalizer.
+  // This transfers the responsibility of the previously managed value's
+  // deletion to the caller. Pass by pointer, because *finalizer_ptr gets
+  // reset to nullptr.
+  void UnregisterFromReleaseAtTeardown(ManagedObjectFinalizer** finalizer_ptr);
+
+  size_t elements_deletion_counter() { return elements_deletion_counter_; }
+  void set_elements_deletion_counter(size_t value) {
+    elements_deletion_counter_ = value;
+  }
 
  protected:
   explicit Isolate(bool enable_serializer);
+  bool IsArrayOrObjectPrototype(Object* object);
 
  private:
   friend struct GlobalState;
   friend struct InitializeGlobalState;
-  Handle<JSObject> SetUpSubregistry(Handle<JSObject> registry, Handle<Map> map,
-                                    const char* name);
 
   // These fields are accessed through the API, offsets must be kept in sync
   // with v8::internal::Internals (in include/v8.h) constants. This is also
@@ -1156,7 +1330,7 @@ class Isolate {
   // the Isolate. The top of the stack points to a thread which is currently
   // running the Isolate. When the stack is empty, the Isolate is considered
   // not entered by any thread and can be Disposed.
-  // If the same thread enters the Isolate more then once, the entry_count_
+  // If the same thread enters the Isolate more than once, the entry_count_
   // is incremented rather then a new item pushed to the stack.
   class EntryStackItem {
    public:
@@ -1225,11 +1399,25 @@ class Isolate {
   // then return true.
   bool PropagatePendingExceptionToExternalTryCatch();
 
-  // Remove per-frame stored materialized objects when we are unwinding
-  // the frame.
-  void RemoveMaterializedObjectsOnUnwind(StackFrame* frame);
-
   void RunMicrotasksInternal();
+
+  const char* RAILModeName(RAILMode rail_mode) const {
+    switch (rail_mode) {
+      case PERFORMANCE_RESPONSE:
+        return "RESPONSE";
+      case PERFORMANCE_ANIMATION:
+        return "ANIMATION";
+      case PERFORMANCE_IDLE:
+        return "IDLE";
+      case PERFORMANCE_LOAD:
+        return "LOAD";
+    }
+    return "";
+  }
+
+  // TODO(alph): Remove along with the deprecated GetCpuProfiler().
+  friend v8::CpuProfiler* v8::Isolate::GetCpuProfiler();
+  CpuProfiler* cpu_profiler() const { return cpu_profiler_; }
 
   base::Atomic32 id_;
   EntryStackItem* entry_stack_;
@@ -1240,12 +1428,12 @@ class Isolate {
   RuntimeProfiler* runtime_profiler_;
   CompilationCache* compilation_cache_;
   Counters* counters_;
-  CodeRange* code_range_;
   base::RecursiveMutex break_access_;
   Logger* logger_;
   StackGuard stack_guard_;
   StatsTable* stats_table_;
-  StubCache* stub_cache_;
+  StubCache* load_stub_cache_;
+  StubCache* store_stub_cache_;
   CodeAgingHelper* code_aging_helper_;
   DeoptimizerData* deoptimizer_data_;
   bool deoptimizer_lazy_throw_;
@@ -1254,31 +1442,35 @@ class Isolate {
   bool capture_stack_trace_for_uncaught_exceptions_;
   int stack_trace_for_uncaught_exceptions_frame_limit_;
   StackTrace::StackTraceOptions stack_trace_for_uncaught_exceptions_options_;
-  MemoryAllocator* memory_allocator_;
-  KeyedLookupCache* keyed_lookup_cache_;
   ContextSlotCache* context_slot_cache_;
   DescriptorLookupCache* descriptor_lookup_cache_;
   HandleScopeData handle_scope_data_;
   HandleScopeImplementer* handle_scope_implementer_;
   UnicodeCache* unicode_cache_;
-  base::AccountingAllocator allocator_;
-  Zone runtime_zone_;
-  Zone interface_descriptor_zone_;
+  AccountingAllocator* allocator_;
   InnerPointerToCodeCache* inner_pointer_to_code_cache_;
   GlobalHandles* global_handles_;
   EternalHandles* eternal_handles_;
   ThreadManager* thread_manager_;
   RuntimeState runtime_state_;
   Builtins builtins_;
-  bool has_installed_extensions_;
+  SetupIsolateDelegate* setup_delegate_;
   unibrow::Mapping<unibrow::Ecma262UnCanonicalize> jsregexp_uncanonicalize_;
   unibrow::Mapping<unibrow::CanonicalizationRange> jsregexp_canonrange_;
   unibrow::Mapping<unibrow::Ecma262Canonicalize>
       regexp_macro_assembler_canonicalize_;
   RegExpStack* regexp_stack_;
+  List<int> regexp_indices_;
   DateCache* date_cache_;
   CallInterfaceDescriptorData* call_descriptor_data_;
+  AccessCompilerData* access_compiler_data_;
   base::RandomNumberGenerator* random_number_generator_;
+  base::AtomicValue<RAILMode> rail_mode_;
+  bool promise_hook_or_debug_is_active_;
+  PromiseHook promise_hook_;
+  HostImportModuleDynamicallyCallback host_import_module_dynamically_callback_;
+  base::Mutex rail_mutex_;
+  double load_start_time_ms_;
 
   // Whether the isolate has been created for snapshotting.
   bool serializer_enabled_;
@@ -1292,6 +1484,10 @@ class Isolate {
   // True if ES2015 tail call elimination feature is enabled.
   bool is_tail_call_elimination_enabled_;
 
+  // True if the isolate is in background. This flag is used
+  // to prioritize between memory usage and latency.
+  bool is_isolate_in_background_;
+
   // Time stamp at initialization.
   double time_millis_at_init_;
 
@@ -1304,9 +1500,14 @@ class Isolate {
   Debug* debug_;
   CpuProfiler* cpu_profiler_;
   HeapProfiler* heap_profiler_;
+  std::unique_ptr<CodeEventDispatcher> code_event_dispatcher_;
   FunctionEntryHook function_entry_hook_;
 
+  const AstStringConstants* ast_string_constants_;
+
   interpreter::Interpreter* interpreter_;
+
+  CompilerDispatcher* compiler_dispatcher_;
 
   typedef std::pair<InterruptCallback, void*> InterruptEntry;
   std::queue<InterruptEntry> api_interrupts_queue_;
@@ -1338,15 +1539,9 @@ class Isolate {
   // Counts deopt points if deopt_every_n_times is enabled.
   unsigned int stress_deopt_count_;
 
-  Address virtual_handler_register_;
-  Address virtual_slot_register_;
-
   int next_optimization_id_;
 
-  // Counts javascript calls from the API. Wraps around on overflow.
-  unsigned int js_calls_from_api_counter_;
-
-#if TRACE_MAPS
+#if V8_SFI_HAS_UNIQUE_ID
   int next_unique_sfi_id_;
 #endif
 
@@ -1358,6 +1553,7 @@ class Isolate {
 
   // List of callbacks after microtasks were run.
   List<MicrotasksCompletedCallback> microtasks_completed_callbacks_;
+  bool is_running_microtasks_;
 
   v8::Isolate::UseCounterCallback use_counter_callback_;
   BasicBlockProfiler* basic_block_profiler_;
@@ -1370,22 +1566,38 @@ class Isolate {
 
   CancelableTaskManager* cancelable_task_manager_;
 
+  debug::ConsoleDelegate* console_delegate_ = nullptr;
+
   v8::Isolate::AbortOnUncaughtExceptionCallback
       abort_on_uncaught_exception_callback_;
 
+#ifdef USE_SIMULATOR
+  base::Mutex simulator_i_cache_mutex_;
+  base::Mutex simulator_redirection_mutex_;
+#endif
+
+  bool allow_atomics_wait_;
+
+  ManagedObjectFinalizer managed_object_finalizers_list_;
+
+  size_t total_regexp_code_generated_;
+
+  size_t elements_deletion_counter_ = 0;
+
   friend class ExecutionAccess;
   friend class HandleScopeImplementer;
+  friend class HeapTester;
   friend class OptimizingCompileDispatcher;
   friend class SweeperThread;
   friend class ThreadManager;
   friend class Simulator;
   friend class StackGuard;
   friend class ThreadId;
-  friend class TestMemoryAllocatorScope;
-  friend class TestCodeRangeScope;
   friend class v8::Isolate;
   friend class v8::Locker;
   friend class v8::Unlocker;
+  friend class v8::SnapshotCreator;
+  friend class ::TestIsolate;
   friend v8::StartupData v8::V8::CreateSnapshotDataBlob(const char*);
   friend v8::StartupData v8::V8::WarmUpSnapshotDataBlob(v8::StartupData,
                                                         const char*);
@@ -1400,15 +1612,12 @@ class Isolate {
 
 class PromiseOnStack {
  public:
-  PromiseOnStack(Handle<JSFunction> function, Handle<JSObject> promise,
-                 PromiseOnStack* prev)
-      : function_(function), promise_(promise), prev_(prev) {}
-  Handle<JSFunction> function() { return function_; }
+  PromiseOnStack(Handle<JSObject> promise, PromiseOnStack* prev)
+      : promise_(promise), prev_(prev) {}
   Handle<JSObject> promise() { return promise_; }
   PromiseOnStack* prev() { return prev_; }
 
  private:
-  Handle<JSFunction> function_;
   Handle<JSObject> promise_;
   PromiseOnStack* prev_;
 };
@@ -1426,14 +1635,14 @@ class SaveContext BASE_EMBEDDED {
   SaveContext* prev() { return prev_; }
 
   // Returns true if this save context is below a given JavaScript frame.
-  bool IsBelowFrame(JavaScriptFrame* frame) {
+  bool IsBelowFrame(StandardFrame* frame) {
     return (c_entry_fp_ == 0) || (c_entry_fp_ > frame->sp());
   }
 
  private:
-  Isolate* isolate_;
+  Isolate* const isolate_;
   Handle<Context> context_;
-  SaveContext* prev_;
+  SaveContext* const prev_;
   Address c_entry_fp_;
 };
 
@@ -1499,6 +1708,14 @@ class StackLimitCheck BASE_EMBEDDED {
   Isolate* isolate_;
 };
 
+#define STACK_CHECK(isolate, result_value) \
+  do {                                     \
+    StackLimitCheck stack_check(isolate);  \
+    if (stack_check.HasOverflowed()) {     \
+      isolate->StackOverflow();            \
+      return result_value;                 \
+    }                                      \
+  } while (false)
 
 // Support for temporarily postponing interrupts. When the outermost
 // postpone scope is left the interrupts will be re-enabled and any

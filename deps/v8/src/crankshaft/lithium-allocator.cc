@@ -5,13 +5,16 @@
 #include "src/crankshaft/lithium-allocator.h"
 
 #include "src/crankshaft/hydrogen.h"
-#include "src/crankshaft/lithium-inl.h"
 #include "src/crankshaft/lithium-allocator-inl.h"
+#include "src/crankshaft/lithium-inl.h"
+#include "src/objects-inl.h"
 #include "src/register-configuration.h"
 #include "src/string-stream.h"
 
 namespace v8 {
 namespace internal {
+
+const auto GetRegConfig = RegisterConfiguration::Crankshaft;
 
 static inline LifetimePosition Min(LifetimePosition a, LifetimePosition b) {
   return a.Value() < b.Value() ? a : b;
@@ -511,7 +514,7 @@ LifetimePosition LiveRange::FirstIntersection(LiveRange* other) {
 }
 
 LAllocator::LAllocator(int num_values, HGraph* graph)
-    : zone_(graph->isolate()->allocator()),
+    : zone_(graph->isolate()->allocator(), ZONE_NAME),
       chunk_(NULL),
       live_in_sets_(graph->blocks()->length(), zone()),
       live_ranges_(num_values * 2, zone()),
@@ -940,7 +943,7 @@ void LAllocator::ProcessInstructions(HBasicBlock* block, BitVector* live) {
 
         if (instr->ClobbersRegisters()) {
           for (int i = 0; i < Register::kNumRegisters; ++i) {
-            if (Register::from_code(i).IsAllocatable()) {
+            if (GetRegConfig()->IsAllocatableGeneralCode(i)) {
               if (output == NULL || !output->IsRegister() ||
                   output->index() != i) {
                 LiveRange* range = FixedLiveRangeFor(i);
@@ -953,7 +956,7 @@ void LAllocator::ProcessInstructions(HBasicBlock* block, BitVector* live) {
 
         if (instr->ClobbersDoubleRegisters(isolate())) {
           for (int i = 0; i < DoubleRegister::kMaxNumRegisters; ++i) {
-            if (DoubleRegister::from_code(i).IsAllocatable()) {
+            if (GetRegConfig()->IsAllocatableDoubleCode(i)) {
               if (output == NULL || !output->IsDoubleRegister() ||
                   output->index() != i) {
                 LiveRange* range = FixedDoubleLiveRangeFor(i);
@@ -1460,12 +1463,8 @@ void LAllocator::PopulatePointerMaps() {
 
 void LAllocator::AllocateGeneralRegisters() {
   LAllocatorPhase phase("L_Allocate general registers", this);
-  num_registers_ =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::CRANKSHAFT)
-          ->num_allocatable_general_registers();
-  allocatable_register_codes_ =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::CRANKSHAFT)
-          ->allocatable_general_codes();
+  num_registers_ = GetRegConfig()->num_allocatable_general_registers();
+  allocatable_register_codes_ = GetRegConfig()->allocatable_general_codes();
   mode_ = GENERAL_REGISTERS;
   AllocateRegisters();
 }
@@ -1473,12 +1472,8 @@ void LAllocator::AllocateGeneralRegisters() {
 
 void LAllocator::AllocateDoubleRegisters() {
   LAllocatorPhase phase("L_Allocate double registers", this);
-  num_registers_ =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::CRANKSHAFT)
-          ->num_allocatable_double_registers();
-  allocatable_register_codes_ =
-      RegisterConfiguration::ArchDefault(RegisterConfiguration::CRANKSHAFT)
-          ->allocatable_double_codes();
+  num_registers_ = GetRegConfig()->num_allocatable_double_registers();
+  allocatable_register_codes_ = GetRegConfig()->allocatable_double_codes();
   mode_ = DOUBLE_REGISTERS;
   AllocateRegisters();
 }
@@ -1596,9 +1591,9 @@ void LAllocator::AllocateRegisters() {
 
 const char* LAllocator::RegisterName(int allocation_index) {
   if (mode_ == GENERAL_REGISTERS) {
-    return Register::from_code(allocation_index).ToString();
+    return GetRegConfig()->GetGeneralRegisterName(allocation_index);
   } else {
-    return DoubleRegister::from_code(allocation_index).ToString();
+    return GetRegConfig()->GetDoubleRegisterName(allocation_index);
   }
 }
 

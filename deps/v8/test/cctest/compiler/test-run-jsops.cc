@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/objects-inl.h"
 #include "test/cctest/compiler/function-tester.h"
 
 namespace v8 {
@@ -512,7 +513,6 @@ TEST(RegExpLiteral) {
 
 
 TEST(ClassLiteral) {
-  FLAG_harmony_sloppy = true;
   const char* src =
       "(function(a,b) {"
       "  class C {"

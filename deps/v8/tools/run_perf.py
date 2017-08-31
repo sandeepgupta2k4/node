@@ -42,12 +42,11 @@ A suite's results_regexp is expected to have one string place holder
 defaults.
 
 A suite's results_processor may point to an optional python script. If
-specified, it is called after running the tests like this (with a path
-relatve to the suite level's path):
-<results_processor file> <same flags as for d8> <suite level name> <output>
+specified, it is called after running the tests (with a path relative to the
+suite level's path). It is expected to read the measurement's output text
+on stdin and print the processed output to stdout.
 
-The <output> is a temporary file containing d8 output. The results_regexp will
-be applied to the output of this script.
+The results_regexp will be applied to the processed output.
 
 A suite without "tests" is considered a performance test itself.
 
@@ -113,8 +112,6 @@ SUPPORTED_ARCHS = ["arm",
                    "ia32",
                    "mips",
                    "mipsel",
-                   "nacl_ia32",
-                   "nacl_x64",
                    "x64",
                    "arm64"]
 
@@ -128,16 +125,19 @@ def LoadAndroidBuildTools(path):  # pragma: no cover
   assert os.path.exists(path)
   sys.path.insert(0, path)
 
-  from pylib.device import adb_wrapper  # pylint: disable=F0401
-  from pylib.device import device_errors  # pylint: disable=F0401
-  from pylib.device import device_utils  # pylint: disable=F0401
-  from pylib.perf import cache_control  # pylint: disable=F0401
-  from pylib.perf import perf_control  # pylint: disable=F0401
+  import devil_chromium
+  from devil.android import device_errors  # pylint: disable=import-error
+  from devil.android import device_utils  # pylint: disable=import-error
+  from devil.android.sdk import adb_wrapper  # pylint: disable=import-error
+  from devil.android.perf import cache_control  # pylint: disable=import-error
+  from devil.android.perf import perf_control  # pylint: disable=import-error
   global adb_wrapper
   global cache_control
   global device_errors
   global device_utils
   global perf_control
+
+  devil_chromium.Initialize()
 
 
 def GeometricMean(values):
@@ -178,7 +178,7 @@ class Measurement(object):
   gathered by repeated calls to ConsumeOutput.
   """
   def __init__(self, graphs, units, results_regexp, stddev_regexp):
-    self.name = graphs[-1]
+    self.name = '/'.join(graphs)
     self.graphs = graphs
     self.units = units
     self.results_regexp = results_regexp
@@ -235,6 +235,25 @@ def Unzip(iterable):
     left.append(l)
     right.append(r)
   return lambda: iter(left), lambda: iter(right)
+
+
+def RunResultsProcessor(results_processor, stdout, count):
+  # Dummy pass through for null-runs.
+  if stdout is None:
+    return None
+
+  # We assume the results processor is relative to the suite.
+  assert os.path.exists(results_processor)
+  p = subprocess.Popen(
+      [sys.executable, results_processor],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+  )
+  result, _ = p.communicate(input=stdout)
+  print ">>> Processed stdout (#%d):" % count
+  print result
+  return result
 
 
 def AccumulateResults(
@@ -360,6 +379,7 @@ class DefaultSentinel(Node):
     self.flags = []
     self.test_flags = []
     self.resources = []
+    self.results_processor = None
     self.results_regexp = None
     self.stddev_regexp = None
     self.units = "score"
@@ -398,6 +418,8 @@ class GraphConfig(Node):
     self.timeout = suite.get("timeout_%s" % arch, self.timeout)
     self.units = suite.get("units", parent.units)
     self.total = suite.get("total", parent.total)
+    self.results_processor = suite.get(
+        "results_processor", parent.results_processor)
 
     # A regular expression for results. If the parent graph provides a
     # regexp and the current suite has none, a string place holder for the
@@ -444,6 +466,15 @@ class RunnableConfig(GraphConfig):
   def main(self):
     return self._suite.get("main", "")
 
+  def PostProcess(self, stdouts_iter):
+    if self.results_processor:
+      def it():
+        for i, stdout in enumerate(stdouts_iter()):
+          yield RunResultsProcessor(self.results_processor, stdout, i + 1)
+      return it
+    else:
+      return stdouts_iter
+
   def ChangeCWD(self, suite_path):
     """Changes the cwd to to path defined in the current graph.
 
@@ -461,6 +492,8 @@ class RunnableConfig(GraphConfig):
     # TODO(machenbach): This requires +.exe if run on windows.
     extra_flags = extra_flags or []
     cmd = [os.path.join(shell_dir, self.binary)]
+    if self.binary.endswith(".py"):
+      cmd = [sys.executable] + cmd
     if self.binary != 'd8' and '--prof' in extra_flags:
       print "Profiler supported only on a benchmark run with d8"
     return cmd + self.GetCommandFlags(extra_flags=extra_flags)
@@ -472,7 +505,7 @@ class RunnableConfig(GraphConfig):
         AccumulateResults(
             self.graphs,
             self._children,
-            iter_output=stdout_with_patch,
+            iter_output=self.PostProcess(stdout_with_patch),
             trybot=trybot,
             no_patch=False,
             calc_total=self.total,
@@ -480,7 +513,7 @@ class RunnableConfig(GraphConfig):
         AccumulateResults(
             self.graphs,
             self._children,
-            iter_output=stdout_no_patch,
+            iter_output=self.PostProcess(stdout_no_patch),
             trybot=trybot,
             no_patch=True,
             calc_total=self.total,
@@ -612,6 +645,21 @@ class Platform(object):
 class DesktopPlatform(Platform):
   def __init__(self, options):
     super(DesktopPlatform, self).__init__(options)
+    self.command_prefix = []
+
+    if options.prioritize or options.affinitize != None:
+      self.command_prefix = ["schedtool"]
+      if options.prioritize:
+        self.command_prefix += ["-n", "-20"]
+      if options.affinitize != None:
+      # schedtool expects a bit pattern when setting affinity, where each
+      # bit set to '1' corresponds to a core where the process may run on.
+      # First bit corresponds to CPU 0. Since the 'affinitize' parameter is
+      # a core number, we need to map to said bit pattern.
+        cpu = int(options.affinitize)
+        core = 1 << cpu
+        self.command_prefix += ["-a", ("0x%x" % core)]
+      self.command_prefix += ["-e"]
 
   def PreExecution(self):
     pass
@@ -627,15 +675,18 @@ class DesktopPlatform(Platform):
     suffix = ' - without patch' if no_patch else ''
     shell_dir = self.shell_dir_no_patch if no_patch else self.shell_dir
     title = ">>> %%s (#%d)%s:" % ((count + 1), suffix)
+    command = self.command_prefix + runnable.GetCommand(shell_dir,
+                                                        self.extra_flags)
     try:
       output = commands.Execute(
-          runnable.GetCommand(shell_dir, self.extra_flags),
-          timeout=runnable.timeout,
+        command,
+        timeout=runnable.timeout,
       )
     except OSError as e:  # pragma: no cover
       print title % "OSError"
       print e
       return ""
+
     print title % "Stdout"
     print output.stdout
     if output.stderr:  # pragma: no cover
@@ -681,7 +732,8 @@ class AndroidPlatform(Platform):  # pragma: no cover
   def PostExecution(self):
     perf = perf_control.PerfControl(self.device)
     perf.SetDefaultPerfMode()
-    self.device.RunShellCommand(["rm", "-rf", AndroidPlatform.DEVICE_DIR])
+    self.device.RemovePath(
+        AndroidPlatform.DEVICE_DIR, force=True, recursive=True)
 
   def _PushFile(self, host_dir, file_name, target_rel=".",
                 skip_if_missing=False):
@@ -733,12 +785,14 @@ class AndroidPlatform(Platform):  # pragma: no cover
     )
     self._PushFile(
         shell_dir,
-        "snapshot_blob_ignition.bin",
+        "icudtl.dat",
         target_dir,
         skip_if_missing=True,
     )
 
   def PreTests(self, node, path):
+    if isinstance(node, RunnableConfig):
+      node.ChangeCWD(path)
     suite_dir = os.path.abspath(os.path.dirname(path))
     if node.path:
       bench_rel = os.path.normpath(os.path.join(*node.path))
@@ -777,6 +831,7 @@ class AndroidPlatform(Platform):  # pragma: no cover
       output = self.device.RunShellCommand(
           cmd,
           cwd=os.path.join(AndroidPlatform.DEVICE_DIR, bench_rel),
+          check_return=True,
           timeout=runnable.timeout,
           retries=0,
       )
@@ -788,8 +843,110 @@ class AndroidPlatform(Platform):  # pragma: no cover
       stdout = ""
     return stdout
 
+class CustomMachineConfiguration:
+  def __init__(self, disable_aslr = False, governor = None):
+    self.aslr_backup = None
+    self.governor_backup = None
+    self.disable_aslr = disable_aslr
+    self.governor = governor
 
-# TODO: Implement results_processor.
+  def __enter__(self):
+    if self.disable_aslr:
+      self.aslr_backup = CustomMachineConfiguration.GetASLR()
+      CustomMachineConfiguration.SetASLR(0)
+    if self.governor != None:
+      self.governor_backup = CustomMachineConfiguration.GetCPUGovernor()
+      CustomMachineConfiguration.SetCPUGovernor(self.governor)
+    return self
+
+  def __exit__(self, type, value, traceback):
+    if self.aslr_backup != None:
+      CustomMachineConfiguration.SetASLR(self.aslr_backup)
+    if self.governor_backup != None:
+      CustomMachineConfiguration.SetCPUGovernor(self.governor_backup)
+
+  @staticmethod
+  def GetASLR():
+    try:
+      with open("/proc/sys/kernel/randomize_va_space", "r") as f:
+        return int(f.readline().strip())
+    except Exception as e:
+      print "Failed to get current ASLR settings."
+      raise e
+
+  @staticmethod
+  def SetASLR(value):
+    try:
+      with open("/proc/sys/kernel/randomize_va_space", "w") as f:
+        f.write(str(value))
+    except Exception as e:
+      print "Failed to update ASLR to %s." % value
+      print "Are we running under sudo?"
+      raise e
+
+    new_value = CustomMachineConfiguration.GetASLR()
+    if value != new_value:
+      raise Exception("Present value is %s" % new_value)
+
+  @staticmethod
+  def GetCPUCoresRange():
+    try:
+      with open("/sys/devices/system/cpu/present", "r") as f:
+        indexes = f.readline()
+        r = map(int, indexes.split("-"))
+        if len(r) == 1:
+          return range(r[0], r[0] + 1)
+        return range(r[0], r[1] + 1)
+    except Exception as e:
+      print "Failed to retrieve number of CPUs."
+      raise e
+
+  @staticmethod
+  def GetCPUPathForId(cpu_index):
+    ret = "/sys/devices/system/cpu/cpu"
+    ret += str(cpu_index)
+    ret += "/cpufreq/scaling_governor"
+    return ret
+
+  @staticmethod
+  def GetCPUGovernor():
+    try:
+      cpu_indices = CustomMachineConfiguration.GetCPUCoresRange()
+      ret = None
+      for cpu_index in cpu_indices:
+        cpu_device = CustomMachineConfiguration.GetCPUPathForId(cpu_index)
+        with open(cpu_device, "r") as f:
+          # We assume the governors of all CPUs are set to the same value
+          val = f.readline().strip()
+          if ret == None:
+            ret = val
+          elif ret != val:
+            raise Exception("CPU cores have differing governor settings")
+      return ret
+    except Exception as e:
+      print "Failed to get the current CPU governor."
+      print "Is the CPU governor disabled? Check BIOS."
+      raise e
+
+  @staticmethod
+  def SetCPUGovernor(value):
+    try:
+      cpu_indices = CustomMachineConfiguration.GetCPUCoresRange()
+      for cpu_index in cpu_indices:
+        cpu_device = CustomMachineConfiguration.GetCPUPathForId(cpu_index)
+        with open(cpu_device, "w") as f:
+          f.write(value)
+
+    except Exception as e:
+      print "Failed to change CPU governor to %s." % value
+      print "Are we running under sudo?"
+      raise e
+
+    cur_value = CustomMachineConfiguration.GetCPUGovernor()
+    if cur_value != value:
+      raise Exception("Could not set CPU governor. Present value is %s"
+                      % cur_value )
+
 def Main(args):
   logging.getLogger().setLevel(logging.INFO)
   parser = optparse.OptionParser()
@@ -822,6 +979,33 @@ def Main(args):
                     help="JavaScript engine binary. By default, d8 under "
                     "architecture-specific build dir. "
                     "Not supported in conjunction with outdir-no-patch.")
+  parser.add_option("--prioritize",
+                    help="Raise the priority to nice -20 for the benchmarking "
+                    "process.Requires Linux, schedtool, and sudo privileges.",
+                    default=False, action="store_true")
+  parser.add_option("--affinitize",
+                    help="Run benchmarking process on the specified core. "
+                    "For example: "
+                    "--affinitize=0 will run the benchmark process on core 0. "
+                    "--affinitize=3 will run the benchmark process on core 3. "
+                    "Requires Linux, schedtool, and sudo privileges.",
+                    default=None)
+  parser.add_option("--noaslr",
+                    help="Disable ASLR for the duration of the benchmarked "
+                    "process. Requires Linux and sudo privileges.",
+                    default=False, action="store_true")
+  parser.add_option("--cpu-governor",
+                    help="Set cpu governor to specified policy for the "
+                    "duration of the benchmarked process. Typical options: "
+                    "'powersave' for more stable results, or 'performance' "
+                    "for shorter completion time of suite, with potentially "
+                    "more noise in results.")
+  parser.add_option("--filter",
+                    help="Only run the benchmarks beginning with this string. "
+                    "For example: "
+                    "--filter=JSTests/TypedArrays/ will run only TypedArray "
+                    "benchmarks from the JSTests suite.",
+                    default="")
 
   (options, args) = parser.parse_args(args)
 
@@ -863,7 +1047,8 @@ def Main(args):
     if options.outdir_no_patch:
       print "specify either binary-override-path or outdir-no-patch"
       return 1
-    options.shell_dir = os.path.dirname(options.binary_override_path)
+    options.shell_dir = os.path.abspath(
+        os.path.dirname(options.binary_override_path))
     default_binary_name = os.path.basename(options.binary_override_path)
 
   if options.outdir_no_patch:
@@ -872,56 +1057,72 @@ def Main(args):
   else:
     options.shell_dir_no_patch = None
 
+  if options.json_test_results:
+    options.json_test_results = os.path.abspath(options.json_test_results)
+
+  if options.json_test_results_no_patch:
+    options.json_test_results_no_patch = os.path.abspath(
+        options.json_test_results_no_patch)
+
+  # Ensure all arguments have absolute path before we start changing current
+  # directory.
+  args = map(os.path.abspath, args)
+
+  prev_aslr = None
+  prev_cpu_gov = None
   platform = Platform.GetPlatform(options)
 
   results = Results()
   results_no_patch = Results()
-  for path in args:
-    path = os.path.abspath(path)
+  with CustomMachineConfiguration(governor = options.cpu_governor,
+                                  disable_aslr = options.noaslr) as conf:
+    for path in args:
+      if not os.path.exists(path):  # pragma: no cover
+        results.errors.append("Configuration file %s does not exist." % path)
+        continue
 
-    if not os.path.exists(path):  # pragma: no cover
-      results.errors.append("Configuration file %s does not exist." % path)
-      continue
+      with open(path) as f:
+        suite = json.loads(f.read())
 
-    with open(path) as f:
-      suite = json.loads(f.read())
+      # If no name is given, default to the file name without .json.
+      suite.setdefault("name", os.path.splitext(os.path.basename(path))[0])
 
-    # If no name is given, default to the file name without .json.
-    suite.setdefault("name", os.path.splitext(os.path.basename(path))[0])
+      # Setup things common to one test suite.
+      platform.PreExecution()
 
-    # Setup things common to one test suite.
-    platform.PreExecution()
+      # Build the graph/trace tree structure.
+      default_parent = DefaultSentinel(default_binary_name)
+      root = BuildGraphConfigs(suite, options.arch, default_parent)
 
-    # Build the graph/trace tree structure.
-    default_parent = DefaultSentinel(default_binary_name)
-    root = BuildGraphConfigs(suite, options.arch, default_parent)
+      # Callback to be called on each node on traversal.
+      def NodeCB(node):
+        platform.PreTests(node, path)
 
-    # Callback to be called on each node on traversal.
-    def NodeCB(node):
-      platform.PreTests(node, path)
+      # Traverse graph/trace tree and iterate over all runnables.
+      for runnable in FlattenRunnables(root, NodeCB):
+        runnable_name = "/".join(runnable.graphs)
+        if not runnable_name.startswith(options.filter):
+          continue
+        print ">>> Running suite: %s" % runnable_name
 
-    # Traverse graph/trace tree and interate over all runnables.
-    for runnable in FlattenRunnables(root, NodeCB):
-      print ">>> Running suite: %s" % "/".join(runnable.graphs)
+        def Runner():
+          """Output generator that reruns several times."""
+          for i in xrange(0, max(1, runnable.run_count)):
+            # TODO(machenbach): Allow timeout per arch like with run_count per
+            # arch.
+            yield platform.Run(runnable, i)
 
-      def Runner():
-        """Output generator that reruns several times."""
-        for i in xrange(0, max(1, runnable.run_count)):
-          # TODO(machenbach): Allow timeout per arch like with run_count per
-          # arch.
-          yield platform.Run(runnable, i)
-
-      # Let runnable iterate over all runs and handle output.
-      result, result_no_patch = runnable.Run(
+        # Let runnable iterate over all runs and handle output.
+        result, result_no_patch = runnable.Run(
           Runner, trybot=options.shell_dir_no_patch)
-      results += result
-      results_no_patch += result_no_patch
-    platform.PostExecution()
+        results += result
+        results_no_patch += result_no_patch
+      platform.PostExecution()
 
-  if options.json_test_results:
-    results.WriteToFile(options.json_test_results)
-  else:  # pragma: no cover
-    print results
+    if options.json_test_results:
+      results.WriteToFile(options.json_test_results)
+    else:  # pragma: no cover
+      print results
 
   if options.json_test_results_no_patch:
     results_no_patch.WriteToFile(options.json_test_results_no_patch)

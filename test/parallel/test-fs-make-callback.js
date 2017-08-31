@@ -1,25 +1,31 @@
 'use strict';
-require('../common');
-var assert = require('assert');
-var fs = require('fs');
+const common = require('../common');
+const assert = require('assert');
+const fs = require('fs');
+const cbTypeError = /^TypeError: "callback" argument must be a function$/;
+const callbackThrowValues = [null, true, false, 0, 1, 'foo', /foo/, [], {}];
 
-function test(cb) {
+const { sep } = require('path');
+const warn = 'Calling an asynchronous function without callback is deprecated.';
+
+common.refreshTmpDir();
+
+function testMakeCallback(cb) {
   return function() {
-    // fs.stat() calls makeCallback() on its second argument
-    fs.stat(__filename, cb);
+    // fs.mkdtemp() calls makeCallback() on its third argument
+    fs.mkdtemp(`${common.tmpDir}${sep}`, {}, cb);
   };
 }
 
-// Verify the case where a callback function is provided
-assert.doesNotThrow(test(function() {}));
+common.expectWarning('DeprecationWarning', warn);
 
-// Anything else should throw
-assert.throws(test(null));
-assert.throws(test(true));
-assert.throws(test(false));
-assert.throws(test(1));
-assert.throws(test(0));
-assert.throws(test('foo'));
-assert.throws(test(/foo/));
-assert.throws(test([]));
-assert.throws(test({}));
+// Passing undefined/nothing calls rethrow() internally, which emits a warning
+assert.doesNotThrow(testMakeCallback());
+
+function invalidCallbackThrowsTests() {
+  callbackThrowValues.forEach((value) => {
+    assert.throws(testMakeCallback(value), cbTypeError);
+  });
+}
+
+invalidCallbackThrowsTests();

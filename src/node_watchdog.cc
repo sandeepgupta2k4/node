@@ -1,3 +1,24 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #include "node_watchdog.h"
 #include "node_internals.h"
 #include "util.h"
@@ -6,14 +27,17 @@
 
 namespace node {
 
-Watchdog::Watchdog(v8::Isolate* isolate, uint64_t ms) : isolate_(isolate),
-                                                        timed_out_(false),
-                                                        destroyed_(false) {
+Watchdog::Watchdog(v8::Isolate* isolate, uint64_t ms, bool* timed_out)
+    : isolate_(isolate), timed_out_(timed_out) {
+
   int rc;
   loop_ = new uv_loop_t;
   CHECK(loop_);
   rc = uv_loop_init(loop_);
-  CHECK_EQ(0, rc);
+  if (rc != 0) {
+    FatalError("node::Watchdog::Watchdog()",
+               "Failed to initialize uv loop.");
+  }
 
   rc = uv_async_init(loop_, &async_, &Watchdog::Async);
   CHECK_EQ(0, rc);
@@ -30,20 +54,6 @@ Watchdog::Watchdog(v8::Isolate* isolate, uint64_t ms) : isolate_(isolate),
 
 
 Watchdog::~Watchdog() {
-  Destroy();
-}
-
-
-void Watchdog::Dispose() {
-  Destroy();
-}
-
-
-void Watchdog::Destroy() {
-  if (destroyed_) {
-    return;
-  }
-
   uv_async_send(&async_);
   uv_thread_join(&thread_);
 
@@ -56,8 +66,6 @@ void Watchdog::Destroy() {
   CHECK_EQ(0, rc);
   delete loop_;
   loop_ = nullptr;
-
-  destroyed_ = true;
 }
 
 
@@ -69,7 +77,7 @@ void Watchdog::Run(void* arg) {
   uv_run(wd->loop_, UV_RUN_DEFAULT);
 
   // Loop ref count reaches zero when both handles are closed.
-  // Close the timer handle on this side and let Destroy() close async_
+  // Close the timer handle on this side and let ~Watchdog() close async_
   uv_close(reinterpret_cast<uv_handle_t*>(&wd->timer_), nullptr);
 }
 
@@ -82,24 +90,15 @@ void Watchdog::Async(uv_async_t* async) {
 
 void Watchdog::Timer(uv_timer_t* timer) {
   Watchdog* w = ContainerOf(&Watchdog::timer_, timer);
-  w->timed_out_ = true;
-  uv_stop(w->loop_);
+  *w->timed_out_ = true;
   w->isolate()->TerminateExecution();
+  uv_stop(w->loop_);
 }
 
 
-SigintWatchdog::~SigintWatchdog() {
-  Destroy();
-}
-
-
-void SigintWatchdog::Dispose() {
-  Destroy();
-}
-
-
-SigintWatchdog::SigintWatchdog(v8::Isolate* isolate)
-    : isolate_(isolate), received_signal_(false), destroyed_(false) {
+SigintWatchdog::SigintWatchdog(
+  v8::Isolate* isolate, bool* received_signal)
+    : isolate_(isolate), received_signal_(received_signal) {
   // Register this watchdog with the global SIGINT/Ctrl+C listener.
   SigintWatchdogHelper::GetInstance()->Register(this);
   // Start the helper thread, if that has not already happened.
@@ -107,20 +106,14 @@ SigintWatchdog::SigintWatchdog(v8::Isolate* isolate)
 }
 
 
-void SigintWatchdog::Destroy() {
-  if (destroyed_) {
-    return;
-  }
-
-  destroyed_ = true;
-
+SigintWatchdog::~SigintWatchdog() {
   SigintWatchdogHelper::GetInstance()->Unregister(this);
   SigintWatchdogHelper::GetInstance()->Stop();
 }
 
 
 void SigintWatchdog::HandleSigint() {
-  received_signal_ = true;
+  *received_signal_ = true;
   isolate_->TerminateExecution();
 }
 
@@ -147,7 +140,8 @@ void SigintWatchdogHelper::HandleSignal(int signum) {
 // Windows starts a separate thread for executing the handler, so no extra
 // helper thread is required.
 BOOL WINAPI SigintWatchdogHelper::WinCtrlCHandlerRoutine(DWORD dwCtrlType) {
-  if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT) {
+  if (!instance.watchdog_disabled_ &&
+      (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT)) {
     InformWatchdogsAboutSignal();
 
     // Return true because the signal has been handled.
@@ -160,7 +154,7 @@ BOOL WINAPI SigintWatchdogHelper::WinCtrlCHandlerRoutine(DWORD dwCtrlType) {
 
 
 bool SigintWatchdogHelper::InformWatchdogsAboutSignal() {
-  uv_mutex_lock(&instance.list_mutex_);
+  Mutex::ScopedLock list_lock(instance.list_mutex_);
 
   bool is_stopping = false;
 #ifdef __POSIX__
@@ -176,17 +170,15 @@ bool SigintWatchdogHelper::InformWatchdogsAboutSignal() {
   for (auto it : instance.watchdogs_)
     it->HandleSigint();
 
-  uv_mutex_unlock(&instance.list_mutex_);
   return is_stopping;
 }
 
 
 int SigintWatchdogHelper::Start() {
-  int ret = 0;
-  uv_mutex_lock(&mutex_);
+  Mutex::ScopedLock lock(mutex_);
 
   if (start_stop_count_++ > 0) {
-    goto dont_start;
+    return 0;
   }
 
 #ifdef __POSIX__
@@ -197,46 +189,52 @@ int SigintWatchdogHelper::Start() {
   sigset_t sigmask;
   sigfillset(&sigmask);
   CHECK_EQ(0, pthread_sigmask(SIG_SETMASK, &sigmask, &sigmask));
-  ret = pthread_create(&thread_, nullptr, RunSigintWatchdog, nullptr);
+  int ret = pthread_create(&thread_, nullptr, RunSigintWatchdog, nullptr);
   CHECK_EQ(0, pthread_sigmask(SIG_SETMASK, &sigmask, nullptr));
   if (ret != 0) {
-    goto dont_start;
+    return ret;
   }
   has_running_thread_ = true;
 
   RegisterSignalHandler(SIGINT, HandleSignal);
 #else
-  SetConsoleCtrlHandler(WinCtrlCHandlerRoutine, TRUE);
+  if (watchdog_disabled_) {
+    watchdog_disabled_ = false;
+  } else {
+    SetConsoleCtrlHandler(WinCtrlCHandlerRoutine, TRUE);
+  }
 #endif
 
- dont_start:
-  uv_mutex_unlock(&mutex_);
-  return ret;
+  return 0;
 }
 
 
 bool SigintWatchdogHelper::Stop() {
-  uv_mutex_lock(&mutex_);
-  uv_mutex_lock(&list_mutex_);
+  bool had_pending_signal;
+  Mutex::ScopedLock lock(mutex_);
 
-  bool had_pending_signal = has_pending_signal_;
+  {
+    Mutex::ScopedLock list_lock(list_mutex_);
 
-  if (--start_stop_count_ > 0) {
-    uv_mutex_unlock(&list_mutex_);
-    goto dont_stop;
+    had_pending_signal = has_pending_signal_;
+
+    if (--start_stop_count_ > 0) {
+      has_pending_signal_ = false;
+      return had_pending_signal;
+    }
+
+#ifdef __POSIX__
+    // Set stopping now because it's only protected by list_mutex_.
+    stopping_ = true;
+#endif
+
+    watchdogs_.clear();
   }
 
 #ifdef __POSIX__
-  // Set stopping now because it's only protected by list_mutex_.
-  stopping_ = true;
-#endif
-
-  watchdogs_.clear();
-  uv_mutex_unlock(&list_mutex_);
-
-#ifdef __POSIX__
   if (!has_running_thread_) {
-    goto dont_stop;
+    has_pending_signal_ = false;
+    return had_pending_signal;
   }
 
   // Wake up the helper thread.
@@ -248,36 +246,37 @@ bool SigintWatchdogHelper::Stop() {
 
   RegisterSignalHandler(SIGINT, SignalExit, true);
 #else
-  SetConsoleCtrlHandler(WinCtrlCHandlerRoutine, FALSE);
+  watchdog_disabled_ = true;
 #endif
 
   had_pending_signal = has_pending_signal_;
- dont_stop:
-  uv_mutex_unlock(&mutex_);
-
   has_pending_signal_ = false;
+
   return had_pending_signal;
 }
 
 
+bool SigintWatchdogHelper::HasPendingSignal() {
+  Mutex::ScopedLock lock(list_mutex_);
+
+  return has_pending_signal_;
+}
+
+
 void SigintWatchdogHelper::Register(SigintWatchdog* wd) {
-  uv_mutex_lock(&list_mutex_);
+  Mutex::ScopedLock lock(list_mutex_);
 
   watchdogs_.push_back(wd);
-
-  uv_mutex_unlock(&list_mutex_);
 }
 
 
 void SigintWatchdogHelper::Unregister(SigintWatchdog* wd) {
-  uv_mutex_lock(&list_mutex_);
+  Mutex::ScopedLock lock(list_mutex_);
 
   auto it = std::find(watchdogs_.begin(), watchdogs_.end(), wd);
 
   CHECK_NE(it, watchdogs_.end());
   watchdogs_.erase(it);
-
-  uv_mutex_unlock(&list_mutex_);
 }
 
 
@@ -288,10 +287,9 @@ SigintWatchdogHelper::SigintWatchdogHelper()
   has_running_thread_ = false;
   stopping_ = false;
   CHECK_EQ(0, uv_sem_init(&sem_, 0));
+#else
+  watchdog_disabled_ = false;
 #endif
-
-  CHECK_EQ(0, uv_mutex_init(&mutex_));
-  CHECK_EQ(0, uv_mutex_init(&list_mutex_));
 }
 
 
@@ -303,9 +301,6 @@ SigintWatchdogHelper::~SigintWatchdogHelper() {
   CHECK_EQ(has_running_thread_, false);
   uv_sem_destroy(&sem_);
 #endif
-
-  uv_mutex_destroy(&mutex_);
-  uv_mutex_destroy(&list_mutex_);
 }
 
 SigintWatchdogHelper SigintWatchdogHelper::instance;

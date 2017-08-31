@@ -4,21 +4,20 @@
 
 #include "src/heap/objects-visiting.h"
 
+#include "src/heap/heap-inl.h"
 #include "src/heap/mark-compact-inl.h"
 #include "src/heap/objects-visiting-inl.h"
 
 namespace v8 {
 namespace internal {
 
-
-StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(Map* map) {
+VisitorId StaticVisitorBase::GetVisitorId(Map* map) {
   return GetVisitorId(map->instance_type(), map->instance_size(),
                       FLAG_unbox_double_fields && !map->HasFastPointerLayout());
 }
 
-
-StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
-    int instance_type, int instance_size, bool has_unboxed_fields) {
+VisitorId StaticVisitorBase::GetVisitorId(int instance_type, int instance_size,
+                                          bool has_unboxed_fields) {
   if (instance_type < FIRST_NONSTRING_TYPE) {
     switch (instance_type & kStringRepresentationMask) {
       case kSeqStringTag:
@@ -39,8 +38,10 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
         return kVisitSlicedString;
 
       case kExternalStringTag:
-        return GetVisitorIdForSize(kVisitDataObject, kVisitDataObjectGeneric,
-                                   instance_size, has_unboxed_fields);
+        return kVisitDataObject;
+
+      case kThinStringTag:
+        return kVisitThinString;
     }
     UNREACHABLE();
   }
@@ -93,8 +94,7 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
       return kVisitSharedFunctionInfo;
 
     case JS_PROXY_TYPE:
-      return GetVisitorIdForSize(kVisitStruct, kVisitStructGeneric,
-                                 instance_size, has_unboxed_fields);
+      return kVisitStruct;
 
     case SYMBOL_TYPE:
       return kVisitSymbol;
@@ -103,15 +103,18 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
       return kVisitJSArrayBuffer;
 
     case JS_OBJECT_TYPE:
+    case JS_ERROR_TYPE:
+    case JS_ARGUMENTS_TYPE:
+    case JS_ASYNC_FROM_SYNC_ITERATOR_TYPE:
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
     case JS_GENERATOR_OBJECT_TYPE:
-    case JS_MODULE_TYPE:
+    case JS_ASYNC_GENERATOR_OBJECT_TYPE:
+    case JS_MODULE_NAMESPACE_TYPE:
     case JS_VALUE_TYPE:
     case JS_DATE_TYPE:
     case JS_ARRAY_TYPE:
     case JS_GLOBAL_PROXY_TYPE:
     case JS_GLOBAL_OBJECT_TYPE:
-    case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_MESSAGE_OBJECT_TYPE:
     case JS_TYPED_ARRAY_TYPE:
     case JS_DATA_VIEW_TYPE:
@@ -119,23 +122,60 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
     case JS_MAP_TYPE:
     case JS_SET_ITERATOR_TYPE:
     case JS_MAP_ITERATOR_TYPE:
+    case JS_STRING_ITERATOR_TYPE:
+
+    case JS_TYPED_ARRAY_KEY_ITERATOR_TYPE:
+    case JS_FAST_ARRAY_KEY_ITERATOR_TYPE:
+    case JS_GENERIC_ARRAY_KEY_ITERATOR_TYPE:
+    case JS_UINT8_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_INT8_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_UINT16_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_INT16_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_UINT32_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_INT32_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FLOAT32_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FLOAT64_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_UINT8_CLAMPED_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_SMI_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_HOLEY_SMI_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_HOLEY_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_DOUBLE_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_HOLEY_DOUBLE_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_GENERIC_ARRAY_KEY_VALUE_ITERATOR_TYPE:
+    case JS_UINT8_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_INT8_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_UINT16_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_INT16_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_UINT32_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_INT32_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FLOAT32_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FLOAT64_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_UINT8_CLAMPED_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_SMI_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_HOLEY_SMI_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_HOLEY_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_DOUBLE_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_FAST_HOLEY_DOUBLE_ARRAY_VALUE_ITERATOR_TYPE:
+    case JS_GENERIC_ARRAY_VALUE_ITERATOR_TYPE:
+
+    case JS_PROMISE_CAPABILITY_TYPE:
     case JS_PROMISE_TYPE:
     case JS_BOUND_FUNCTION_TYPE:
-      return GetVisitorIdForSize(kVisitJSObject, kVisitJSObjectGeneric,
-                                 instance_size, has_unboxed_fields);
+      return has_unboxed_fields ? kVisitJSObject : kVisitJSObjectFast;
+    case JS_API_OBJECT_TYPE:
+    case JS_SPECIAL_API_OBJECT_TYPE:
+      return kVisitJSApiObject;
 
     case JS_FUNCTION_TYPE:
       return kVisitJSFunction;
 
     case FILLER_TYPE:
-      if (instance_size == kPointerSize) return kVisitDataObjectGeneric;
-    // Fall through.
     case FOREIGN_TYPE:
     case HEAP_NUMBER_TYPE:
     case MUTABLE_HEAP_NUMBER_TYPE:
-    case SIMD128_VALUE_TYPE:
-      return GetVisitorIdForSize(kVisitDataObject, kVisitDataObjectGeneric,
-                                 instance_size, has_unboxed_fields);
+      return kVisitDataObject;
 
     case FIXED_UINT8_ARRAY_TYPE:
     case FIXED_INT8_ARRAY_TYPE:
@@ -145,7 +185,7 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
     case FIXED_INT32_ARRAY_TYPE:
     case FIXED_FLOAT32_ARRAY_TYPE:
     case FIXED_UINT8_CLAMPED_ARRAY_TYPE:
-      return kVisitFixedTypedArray;
+      return kVisitFixedTypedArrayBase;
 
     case FIXED_FLOAT64_ARRAY_TYPE:
       return kVisitFixedFloat64Array;
@@ -157,8 +197,7 @@ StaticVisitorBase::VisitorId StaticVisitorBase::GetVisitorId(
         return kVisitAllocationSite;
       }
 
-      return GetVisitorIdForSize(kVisitStruct, kVisitStructGeneric,
-                                 instance_size, has_unboxed_fields);
+      return kVisitStruct;
 
     default:
       UNREACHABLE();
@@ -209,7 +248,7 @@ Object* VisitWeakList(Heap* heap, Object* list, WeakObjectRetainer* retainer) {
         }
       }
       // Retained object is new tail.
-      DCHECK(!retained->IsUndefined());
+      DCHECK(!retained->IsUndefined(heap->isolate()));
       candidate = reinterpret_cast<T*>(retained);
       tail = candidate;
 
@@ -282,7 +321,7 @@ struct WeakListVisitor<Context> {
   }
 
   static Object* WeakNext(Context* context) {
-    return context->get(Context::NEXT_CONTEXT_LINK);
+    return context->next_context_link();
   }
 
   static int WeakNextOffset() {

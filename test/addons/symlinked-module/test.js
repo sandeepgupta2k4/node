@@ -14,7 +14,7 @@ const assert = require('assert');
 
 common.refreshTmpDir();
 
-const addonPath = path.join(__dirname, 'build', 'Release');
+const addonPath = path.join(__dirname, 'build', common.buildType);
 const addonLink = path.join(common.tmpDir, 'addon');
 
 try {
@@ -22,7 +22,6 @@ try {
 } catch (err) {
   if (err.code !== 'EPERM') throw err;
   common.skip('module identity test (no privs for symlinks)');
-  return;
 }
 
 const sub = require('./submodule');

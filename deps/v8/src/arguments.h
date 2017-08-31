@@ -6,7 +6,7 @@
 #define V8_ARGUMENTS_H_
 
 #include "src/allocation.h"
-#include "src/objects-inl.h"
+#include "src/objects.h"
 #include "src/tracing/trace-event.h"
 
 namespace v8 {
@@ -41,7 +41,8 @@ class Arguments BASE_EMBEDDED {
                                         index * kPointerSize));
   }
 
-  template <class S> Handle<S> at(int index) {
+  template <class S = Object>
+  Handle<S> at(int index) {
     Object** value = &((*this)[index]);
     // This cast checks that the object we're accessing does indeed have the
     // expected type.
@@ -79,22 +80,30 @@ double ClobberDoubleRegisters(double x1, double x2, double x3, double x4);
 #define CLOBBER_DOUBLE_REGISTERS()
 #endif
 
-#define RUNTIME_FUNCTION_RETURNS_TYPE(Type, Name)                          \
-  static INLINE(Type __RT_impl_##Name(Arguments args, Isolate* isolate));  \
-  Type Name(int args_length, Object** args_object, Isolate* isolate) {     \
-    CLOBBER_DOUBLE_REGISTERS();                                            \
-    Type value;                                                            \
-    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"), "V8." #Name);    \
-    Arguments args(args_length, args_object);                              \
-    if (FLAG_runtime_call_stats) {                                         \
-      RuntimeCallStats* stats = isolate->counters()->runtime_call_stats(); \
-      RuntimeCallTimerScope timer(isolate, &stats->Name);                  \
-      value = __RT_impl_##Name(args, isolate);                             \
-    } else {                                                               \
-      value = __RT_impl_##Name(args, isolate);                             \
-    }                                                                      \
-    return value;                                                          \
-  }                                                                        \
+// TODO(cbruni): add global flag to check whether any tracing events have been
+// enabled.
+#define RUNTIME_FUNCTION_RETURNS_TYPE(Type, Name)                             \
+  static INLINE(Type __RT_impl_##Name(Arguments args, Isolate* isolate));     \
+                                                                              \
+  V8_NOINLINE static Type Stats_##Name(int args_length, Object** args_object, \
+                                       Isolate* isolate) {                    \
+    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::Name);            \
+    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"),                     \
+                 "V8.Runtime_" #Name);                                        \
+    Arguments args(args_length, args_object);                                 \
+    return __RT_impl_##Name(args, isolate);                                   \
+  }                                                                           \
+                                                                              \
+  Type Name(int args_length, Object** args_object, Isolate* isolate) {        \
+    DCHECK(isolate->context() == nullptr || isolate->context()->IsContext()); \
+    CLOBBER_DOUBLE_REGISTERS();                                               \
+    if (V8_UNLIKELY(FLAG_runtime_stats)) {                                    \
+      return Stats_##Name(args_length, args_object, isolate);                 \
+    }                                                                         \
+    Arguments args(args_length, args_object);                                 \
+    return __RT_impl_##Name(args, isolate);                                   \
+  }                                                                           \
+                                                                              \
   static Type __RT_impl_##Name(Arguments args, Isolate* isolate)
 
 #define RUNTIME_FUNCTION(Name) RUNTIME_FUNCTION_RETURNS_TYPE(Object*, Name)

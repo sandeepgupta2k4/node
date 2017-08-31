@@ -914,6 +914,35 @@ void DisassemblingDecoder::VisitLoadStorePairOffset(Instruction* instr) {
   Format(instr, mnemonic, form);
 }
 
+void DisassemblingDecoder::VisitLoadStoreAcquireRelease(Instruction *instr) {
+  const char *mnemonic = "unimplemented";
+  const char* form = "'Wt, ['Xns]";
+  const char* form_x = "'Xt, ['Xns]";
+  const char* form_stlx = "'Ws, 'Wt, ['Xns]";
+  const char* form_stlx_x = "'Ws, 'Xt, ['Xns]";
+
+  switch (instr->Mask(LoadStoreAcquireReleaseMask)) {
+    case LDAXR_b: mnemonic = "ldaxrb"; break;
+    case STLR_b:  mnemonic = "stlrb"; break;
+    case LDAR_b:  mnemonic = "ldarb"; break;
+    case LDAXR_h: mnemonic = "ldaxrh"; break;
+    case STLR_h:  mnemonic = "stlrh"; break;
+    case LDAR_h:  mnemonic = "ldarh"; break;
+    case LDAXR_w: mnemonic = "ldaxr"; break;
+    case STLR_w:  mnemonic = "stlr"; break;
+    case LDAR_w:  mnemonic = "ldar"; break;
+    case LDAXR_x: mnemonic = "ldaxr"; form = form_x; break;
+    case STLR_x:  mnemonic = "stlr"; form = form_x; break;
+    case LDAR_x:  mnemonic = "ldar"; form = form_x; break;
+    case STLXR_h: mnemonic = "stlxrh"; form = form_stlx; break;
+    case STLXR_b: mnemonic = "stlxrb"; form = form_stlx; break;
+    case STLXR_w: mnemonic = "stlxr"; form = form_stlx; break;
+    case STLXR_x: mnemonic = "stlxr"; form = form_stlx_x; break;
+    default:
+      form = "(LoadStoreAcquireRelease)";
+  }
+  Format(instr, mnemonic, form);
+}
 
 void DisassemblingDecoder::VisitFPCompare(Instruction* instr) {
   const char *mnemonic = "unimplemented";
@@ -1295,6 +1324,9 @@ int DisassemblingDecoder::SubstituteRegisterField(Instruction* instr,
       }
       break;
     }
+    case 's':
+      reg_num = instr->Rs();
+      break;
     default: UNREACHABLE();
   }
 
@@ -1719,7 +1751,7 @@ namespace disasm {
 
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
-  v8::internal::SNPrintF(tmp_buffer_, "%p", addr);
+  v8::internal::SNPrintF(tmp_buffer_, "%p", static_cast<void *>(addr));
   return tmp_buffer_.start();
 }
 
@@ -1771,7 +1803,8 @@ class BufferDisassembler : public v8::internal::DisassemblingDecoder {
   ~BufferDisassembler() { }
 
   virtual void ProcessOutput(v8::internal::Instruction* instr) {
-    v8::internal::SNPrintF(out_buffer_, "%s", GetOutput());
+    v8::internal::SNPrintF(out_buffer_, "%08" PRIx32 "       %s",
+                           instr->InstructionBits(), GetOutput());
   }
 
  private:

@@ -28,33 +28,40 @@
 #undef MAP_TYPE
 
 #include "src/base/macros.h"
+#include "src/base/platform/platform-posix.h"
 #include "src/base/platform/platform.h"
-
 
 namespace v8 {
 namespace base {
 
+class SolarisTimezoneCache : public PosixTimezoneCache {
+  const char* LocalTimezone(double time) override;
 
-const char* OS::LocalTimezone(double time, TimezoneCache* cache) {
+  double LocalTimeOffset() override;
+
+  ~SolarisTimezoneCache() override {}
+};
+
+const char* SolarisTimezoneCache::LocalTimezone(double time) {
   if (std::isnan(time)) return "";
   time_t tv = static_cast<time_t>(std::floor(time/msPerSecond));
-  struct tm* t = localtime(&tv);  // NOLINT(runtime/threadsafe_fn)
+  struct tm tm;
+  struct tm* t = localtime_r(&tv, &tm);
   if (NULL == t) return "";
   return tzname[0];  // The location of the timezone string on Solaris.
 }
 
-
-double OS::LocalTimeOffset(TimezoneCache* cache) {
+double SolarisTimezoneCache::LocalTimeOffset() {
   tzset();
   return -static_cast<double>(timezone * msPerSecond);
 }
 
+TimezoneCache* OS::CreateTimezoneCache() { return new SolarisTimezoneCache(); }
 
-void* OS::Allocate(const size_t requested,
-                   size_t* allocated,
-                   bool is_executable) {
+void* OS::Allocate(const size_t requested, size_t* allocated,
+                   OS::MemoryPermission access) {
   const size_t msize = RoundUp(requested, getpagesize());
-  int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
+  int prot = GetProtectionFromMemoryPermission(access);
   void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
 
   if (mbase == MAP_FAILED) return NULL;
@@ -197,6 +204,10 @@ bool VirtualMemory::UncommitRegion(void* base, size_t size) {
               kMmapFdOffset) != MAP_FAILED;
 }
 
+bool VirtualMemory::ReleasePartialRegion(void* base, size_t size,
+                                         void* free_start, size_t free_size) {
+  return munmap(free_start, free_size) == 0;
+}
 
 bool VirtualMemory::ReleaseRegion(void* base, size_t size) {
   return munmap(base, size) == 0;

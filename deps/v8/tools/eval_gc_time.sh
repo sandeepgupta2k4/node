@@ -17,6 +17,7 @@ print_usage_and_die() {
   echo  "  -c|--csv                               provide csv output"
   echo  "  -f|--file FILE                         profile input in a file"
   echo  "                                         (default: stdin)"
+  echo  "  -p|--percentiles                       comma separated percentiles"
   exit 1
 }
 
@@ -25,6 +26,7 @@ RANK_MODE=max
 TOP_LEVEL=no
 CSV=""
 LOGFILE=/dev/stdin
+PERCENTILES=""
 
 while [[ $# -ge 1 ]]
 do
@@ -60,6 +62,10 @@ do
       LOGFILE=$2
       shift
       ;;
+    -p|--percentiles)
+      PERCENTILES="--percentiles=$2"
+      shift
+      ;;
     *)
       break
       ;;
@@ -80,7 +86,6 @@ INTERESTING_NEW_GEN_KEYS="\
   old_new \
   code \
   semispace \
-  object_groups \
 "
 
 INTERESTING_OLD_GEN_KEYS="\
@@ -98,7 +103,6 @@ INTERESTING_OLD_GEN_KEYS="\
   evacuate.clean_up \
   evacuate.copy \
   evacuate.update_pointers \
-  evacuate.update_pointers.between_evacuated \
   evacuate.update_pointers.to_evacuated \
   evacuate.update_pointers.to_new \
   evacuate.update_pointers.weak \
@@ -145,6 +149,7 @@ case $OP in
       --no-histogram \
       --rank $RANK_MODE \
       $CSV \
+      $PERCENTILES \
       ${INTERESTING_NEW_GEN_KEYS}
     ;;
   old-gen-rank)
@@ -153,6 +158,7 @@ case $OP in
       --no-histogram \
       --rank $RANK_MODE \
       $CSV \
+      $PERCENTILES \
       ${INTERESTING_OLD_GEN_KEYS}
     ;;
   *)

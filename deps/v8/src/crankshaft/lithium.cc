@@ -5,6 +5,8 @@
 #include "src/crankshaft/lithium.h"
 
 #include "src/ast/scopes.h"
+#include "src/codegen.h"
+#include "src/objects-inl.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "src/crankshaft/ia32/lithium-ia32.h"  // NOLINT
@@ -40,6 +42,7 @@
 namespace v8 {
 namespace internal {
 
+const auto GetRegConfig = RegisterConfiguration::Crankshaft;
 
 void LOperand::PrintTo(StringStream* stream) {
   LUnallocated* unalloc = NULL;
@@ -63,7 +66,7 @@ void LOperand::PrintTo(StringStream* stream) {
             stream->Add("(=invalid_reg#%d)", reg_index);
           } else {
             const char* register_name =
-                Register::from_code(reg_index).ToString();
+                GetRegConfig()->GetGeneralRegisterName(reg_index);
             stream->Add("(=%s)", register_name);
           }
           break;
@@ -74,7 +77,7 @@ void LOperand::PrintTo(StringStream* stream) {
             stream->Add("(=invalid_double_reg#%d)", reg_index);
           } else {
             const char* double_register_name =
-                DoubleRegister::from_code(reg_index).ToString();
+                GetRegConfig()->GetDoubleRegisterName(reg_index);
             stream->Add("(=%s)", double_register_name);
           }
           break;
@@ -110,7 +113,8 @@ void LOperand::PrintTo(StringStream* stream) {
       if (reg_index < 0 || reg_index >= Register::kNumRegisters) {
         stream->Add("(=invalid_reg#%d|R)", reg_index);
       } else {
-        stream->Add("[%s|R]", Register::from_code(reg_index).ToString());
+        stream->Add("[%s|R]",
+                    GetRegConfig()->GetGeneralRegisterName(reg_index));
       }
       break;
     }
@@ -119,7 +123,7 @@ void LOperand::PrintTo(StringStream* stream) {
       if (reg_index < 0 || reg_index >= DoubleRegister::kMaxNumRegisters) {
         stream->Add("(=invalid_double_reg#%d|R)", reg_index);
       } else {
-        stream->Add("[%s|R]", DoubleRegister::from_code(reg_index).ToString());
+        stream->Add("[%s|R]", GetRegConfig()->GetDoubleRegisterName(reg_index));
       }
       break;
     }
@@ -258,7 +262,6 @@ LChunk::LChunk(CompilationInfo* info, HGraph* graph)
       graph_(graph),
       instructions_(32, info->zone()),
       pointer_maps_(8, info->zone()),
-      inlined_functions_(1, info->zone()),
       deprecation_dependencies_(32, info->zone()),
       stability_dependencies_(8, info->zone()) {}
 
@@ -446,9 +449,6 @@ LChunk* LChunk::NewChunk(HGraph* graph) {
 Handle<Code> LChunk::Codegen() {
   MacroAssembler assembler(info()->isolate(), NULL, 0,
                            CodeObjectRequired::kYes);
-  LOG_CODE_EVENT(info()->isolate(),
-                 CodeStartLinePosInfoRecordEvent(
-                     assembler.positions_recorder()));
   // Code serializer only takes unoptimized code.
   DCHECK(!info()->will_serialize());
   LCodeGen generator(this, &assembler, info());
@@ -458,20 +458,17 @@ Handle<Code> LChunk::Codegen() {
   if (generator.GenerateCode()) {
     generator.CheckEnvironmentUsage();
     CodeGenerator::MakeCodePrologue(info(), "optimized");
-    Handle<Code> code = CodeGenerator::MakeCodeEpilogue(&assembler, info());
+    Handle<Code> code = CodeGenerator::MakeCodeEpilogue(
+        &assembler, nullptr, info(), assembler.CodeObject());
     generator.FinishCode(code);
     CommitDependencies(code);
+    Handle<ByteArray> source_positions =
+        generator.source_position_table_builder()->ToSourcePositionTable(
+            info()->isolate(), Handle<AbstractCode>::cast(code));
+    code->set_source_position_table(*source_positions);
     code->set_is_crankshafted(true);
-    void* jit_handler_data =
-        assembler.positions_recorder()->DetachJITHandlerData();
-    LOG_CODE_EVENT(info()->isolate(),
-                   CodeEndLinePosInfoRecordEvent(AbstractCode::cast(*code),
-                                                 jit_handler_data));
 
     CodeGenerator::PrintCode(code, info());
-    DCHECK(!(info()->isolate()->serializer_enabled() &&
-             info()->GetMustNotHaveEagerFrame() &&
-             generator.NeedsEagerFrame()));
     return code;
   }
   assembler.AbortedCodeGeneration();

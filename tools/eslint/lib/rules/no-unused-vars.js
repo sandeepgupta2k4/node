@@ -9,8 +9,8 @@
 // Requirements
 //------------------------------------------------------------------------------
 
-var lodash = require("lodash");
-var astUtils = require("../ast-utils");
+const lodash = require("lodash");
+const astUtils = require("../ast-utils");
 
 //------------------------------------------------------------------------------
 // Rule Definition
@@ -42,6 +42,9 @@ module.exports = {
                             args: {
                                 enum: ["all", "after-used", "none"]
                             },
+                            ignoreRestSiblings: {
+                                type: "boolean"
+                            },
                             argsIgnorePattern: {
                                 type: "string"
                             },
@@ -58,17 +61,21 @@ module.exports = {
         ]
     },
 
-    create: function(context) {
+    create(context) {
+        const sourceCode = context.getSourceCode();
 
-        var MESSAGE = "'{{name}}' is defined but never used";
+        const DEFINED_MESSAGE = "'{{name}}' is defined but never used.";
+        const ASSIGNED_MESSAGE = "'{{name}}' is assigned a value but never used.";
+        const REST_PROPERTY_TYPE = /^(?:Experimental)?RestProperty$/;
 
-        var config = {
+        const config = {
             vars: "all",
             args: "after-used",
+            ignoreRestSiblings: false,
             caughtErrors: "none"
         };
 
-        var firstOption = context.options[0];
+        const firstOption = context.options[0];
 
         if (firstOption) {
             if (typeof firstOption === "string") {
@@ -76,6 +83,7 @@ module.exports = {
             } else {
                 config.vars = firstOption.vars || config.vars;
                 config.args = firstOption.args || config.args;
+                config.ignoreRestSiblings = firstOption.ignoreRestSiblings || config.ignoreRestSiblings;
                 config.caughtErrors = firstOption.caughtErrors || config.caughtErrors;
 
                 if (firstOption.varsIgnorePattern) {
@@ -96,21 +104,21 @@ module.exports = {
         // Helpers
         //--------------------------------------------------------------------------
 
-        var STATEMENT_TYPE = /(?:Statement|Declaration)$/;
+        const STATEMENT_TYPE = /(?:Statement|Declaration)$/;
 
         /**
          * Determines if a given variable is being exported from a module.
-         * @param {Variable} variable - EScope variable object.
+         * @param {Variable} variable - eslint-scope variable object.
          * @returns {boolean} True if the variable is exported, false if not.
          * @private
          */
         function isExported(variable) {
 
-            var definition = variable.defs[0];
+            const definition = variable.defs[0];
 
             if (definition) {
 
-                var node = definition.node;
+                let node = definition.node;
 
                 if (node.type === "VariableDeclarator") {
                     node = node.parent;
@@ -119,14 +127,37 @@ module.exports = {
                 }
 
                 return node.parent.type.indexOf("Export") === 0;
-            } else {
-                return false;
             }
+            return false;
+
+        }
+
+        /**
+         * Determines if a variable has a sibling rest property
+         * @param {Variable} variable - eslint-scope variable object.
+         * @returns {boolean} True if the variable is exported, false if not.
+         * @private
+         */
+        function hasRestSpreadSibling(variable) {
+            if (config.ignoreRestSiblings) {
+                return variable.defs.some(def => {
+                    const propertyNode = def.name.parent;
+                    const patternNode = propertyNode.parent;
+
+                    return (
+                        propertyNode.type === "Property" &&
+                        patternNode.type === "ObjectPattern" &&
+                        REST_PROPERTY_TYPE.test(patternNode.properties[patternNode.properties.length - 1].type)
+                    );
+                });
+            }
+
+            return false;
         }
 
         /**
          * Determines if a reference is a read operation.
-         * @param {Reference} ref - An escope Reference
+         * @param {Reference} ref - An eslint-scope Reference
          * @returns {boolean} whether the given reference represents a read operation
          * @private
          */
@@ -142,7 +173,7 @@ module.exports = {
          * @private
          */
         function isSelfReference(ref, nodes) {
-            var scope = ref.from;
+            let scope = ref.from;
 
             while (scope) {
                 if (nodes.indexOf(scope.block) >= 0) {
@@ -161,6 +192,7 @@ module.exports = {
          * @param {ASTNode} inner - A node which is expected as inside.
          * @param {ASTNode} outer - A node which is expected as outside.
          * @returns {boolean} `true` if the `inner` node exists in the `outer` node.
+         * @private
          */
         function isInside(inner, outer) {
             return (
@@ -173,17 +205,25 @@ module.exports = {
          * If a given reference is left-hand side of an assignment, this gets
          * the right-hand side node of the assignment.
          *
-         * @param {escope.Reference} ref - A reference to check.
+         * In the following cases, this returns null.
+         *
+         * - The reference is not the LHS of an assignment expression.
+         * - The reference is inside of a loop.
+         * - The reference is inside of a function scope which is different from
+         *   the declaration.
+         *
+         * @param {eslint-scope.Reference} ref - A reference to check.
          * @param {ASTNode} prevRhsNode - The previous RHS node.
-         * @returns {ASTNode} The RHS node.
+         * @returns {ASTNode|null} The RHS node or null.
+         * @private
          */
         function getRhsNode(ref, prevRhsNode) {
-            var id = ref.identifier;
-            var parent = id.parent;
-            var granpa = parent.parent;
-            var refScope = ref.from.variableScope;
-            var varScope = ref.resolved.scope.variableScope;
-            var canBeUsedLater = refScope !== varScope;
+            const id = ref.identifier;
+            const parent = id.parent;
+            const granpa = parent.parent;
+            const refScope = ref.from.variableScope;
+            const varScope = ref.resolved.scope.variableScope;
+            const canBeUsedLater = refScope !== varScope || astUtils.isInLoop(id);
 
             /*
              * Inherits the previous node if this reference is in the node.
@@ -213,10 +253,11 @@ module.exports = {
          *      - the funcNode is assigned to a variable.
          *      - the funcNode is bound as an argument of a function call.
          *      - the function is bound to a property and the object satisfies above conditions.
+         * @private
          */
         function isStorableFunction(funcNode, rhsNode) {
-            var node = funcNode;
-            var parent = funcNode.parent;
+            let node = funcNode;
+            let parent = funcNode.parent;
 
             while (parent && isInside(parent, rhsNode)) {
                 switch (parent.type) {
@@ -266,9 +307,10 @@ module.exports = {
          * @param {ASTNode} id - An Identifier node to check.
          * @param {ASTNode} rhsNode - The RHS node of the previous assignment.
          * @returns {boolean} `true` if the `id` node exists inside of a function node which can be used later.
+         * @private
          */
         function isInsideOfStorableFunction(id, rhsNode) {
-            var funcNode = astUtils.getUpperFunction(id);
+            const funcNode = astUtils.getUpperFunction(id);
 
             return (
                 funcNode &&
@@ -280,14 +322,15 @@ module.exports = {
         /**
          * Checks whether a given reference is a read to update itself or not.
          *
-         * @param {escope.Reference} ref - A reference to check.
+         * @param {eslint-scope.Reference} ref - A reference to check.
          * @param {ASTNode} rhsNode - The RHS node of the previous assignment.
          * @returns {boolean} The reference is a read to update itself.
+         * @private
          */
         function isReadForItself(ref, rhsNode) {
-            var id = ref.identifier;
-            var parent = id.parent;
-            var granpa = parent.parent;
+            const id = ref.identifier;
+            const parent = id.parent;
+            const granpa = parent.parent;
 
             return ref.isRead() && (
 
@@ -319,7 +362,7 @@ module.exports = {
          * @private
          */
         function isForInRef(ref) {
-            var target = ref.identifier.parent;
+            let target = ref.identifier.parent;
 
 
             // "for (var ...) { return; }"
@@ -355,20 +398,16 @@ module.exports = {
          * @private
          */
         function isUsedVariable(variable) {
-            var functionNodes = variable.defs.filter(function(def) {
-                    return def.type === "FunctionName";
-                }).map(function(def) {
-                    return def.node;
-                }),
-                isFunctionDefinition = functionNodes.length > 0,
-                rhsNode = null;
+            const functionNodes = variable.defs.filter(def => def.type === "FunctionName").map(def => def.node),
+                isFunctionDefinition = functionNodes.length > 0;
+            let rhsNode = null;
 
-            return variable.references.some(function(ref) {
+            return variable.references.some(ref => {
                 if (isForInRef(ref)) {
                     return true;
                 }
 
-                var forItself = isReadForItself(ref, rhsNode);
+                const forItself = isReadForItself(ref, rhsNode);
 
                 rhsNode = getRhsNode(ref, rhsNode);
 
@@ -381,20 +420,47 @@ module.exports = {
         }
 
         /**
+         * Checks whether the given variable is the last parameter in the non-ignored parameters.
+         *
+         * @param {eslint-scope.Variable} variable - The variable to check.
+         * @returns {boolean} `true` if the variable is the last.
+         */
+        function isLastInNonIgnoredParameters(variable) {
+            const def = variable.defs[0];
+
+            // This is the last.
+            if (def.index === def.node.params.length - 1) {
+                return true;
+            }
+
+            // if all parameters preceded by this variable are ignored and unused, this is the last.
+            if (config.argsIgnorePattern) {
+                const params = context.getDeclaredVariables(def.node);
+                const posteriorParams = params.slice(params.indexOf(variable) + 1);
+
+                if (posteriorParams.every(v => v.references.length === 0 && config.argsIgnorePattern.test(v.name))) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /**
          * Gets an array of variables without read references.
-         * @param {Scope} scope - an escope Scope object.
+         * @param {Scope} scope - an eslint-scope Scope object.
          * @param {Variable[]} unusedVars - an array that saving result.
          * @returns {Variable[]} unused variables of the scope and descendant scopes.
          * @private
          */
         function collectUnusedVariables(scope, unusedVars) {
-            var variables = scope.variables;
-            var childScopes = scope.childScopes;
-            var i, l;
+            const variables = scope.variables;
+            const childScopes = scope.childScopes;
+            let i, l;
 
             if (scope.type !== "TDZ" && (scope.type !== "global" || config.vars === "all")) {
                 for (i = 0, l = variables.length; i < l; ++i) {
-                    var variable = variables[i];
+                    const variable = variables[i];
 
                     // skip a variable of class itself name in the class scope
                     if (scope.type === "class" && scope.block.id === variable.identifiers[0]) {
@@ -412,10 +478,10 @@ module.exports = {
                     }
 
                     // explicit global variables don't have definitions.
-                    var def = variable.defs[0];
+                    const def = variable.defs[0];
 
                     if (def) {
-                        var type = def.type;
+                        const type = def.type;
 
                         // skip catch variables
                         if (type === "CatchClause") {
@@ -432,7 +498,7 @@ module.exports = {
                         if (type === "Parameter") {
 
                             // skip any setter argument
-                            if (def.node.parent.type === "Property" && def.node.parent.kind === "set") {
+                            if ((def.node.parent.type === "Property" || def.node.parent.type === "MethodDefinition") && def.node.parent.kind === "set") {
                                 continue;
                             }
 
@@ -447,7 +513,7 @@ module.exports = {
                             }
 
                             // if "args" option is "after-used", skip all but the last parameter
-                            if (config.args === "after-used" && def.index < def.node.params.length - 1) {
+                            if (config.args === "after-used" && astUtils.isFunction(def.name.parent) && !isLastInNonIgnoredParameters(variable)) {
                                 continue;
                             }
                         } else {
@@ -459,7 +525,7 @@ module.exports = {
                         }
                     }
 
-                    if (!isUsedVariable(variable) && !isExported(variable)) {
+                    if (!isUsedVariable(variable) && !isExported(variable) && !hasRestSpreadSibling(variable)) {
                         unusedVars.push(variable);
                     }
                 }
@@ -474,19 +540,19 @@ module.exports = {
 
         /**
          * Gets the index of a given variable name in a given comment.
-         * @param {escope.Variable} variable - A variable to get.
+         * @param {eslint-scope.Variable} variable - A variable to get.
          * @param {ASTNode} comment - A comment node which includes the variable name.
          * @returns {number} The index of the variable name's location.
          * @private
          */
         function getColumnInComment(variable, comment) {
-            var namePattern = new RegExp("[\\s,]" + lodash.escapeRegExp(variable.name) + "(?:$|[\\s,:])", "g");
+            const namePattern = new RegExp(`[\\s,]${lodash.escapeRegExp(variable.name)}(?:$|[\\s,:])`, "g");
 
             // To ignore the first text "global".
             namePattern.lastIndex = comment.value.indexOf("global") + 6;
 
             // Search a given variable name.
-            var match = namePattern.exec(comment.value);
+            const match = namePattern.exec(comment.value);
 
             return match ? match.index + 1 : 0;
         }
@@ -495,29 +561,14 @@ module.exports = {
          * Creates the correct location of a given variables.
          * The location is at its name string in a `/*global` comment.
          *
-         * @param {escope.Variable} variable - A variable to get its location.
+         * @param {eslint-scope.Variable} variable - A variable to get its location.
          * @returns {{line: number, column: number}} The location object for the variable.
          * @private
          */
         function getLocation(variable) {
-            var comment = variable.eslintExplicitGlobalComment;
-            var baseLoc = comment.loc.start;
-            var column = getColumnInComment(variable, comment);
-            var prefix = comment.value.slice(0, column);
-            var lineInComment = (prefix.match(/\n/g) || []).length;
+            const comment = variable.eslintExplicitGlobalComment;
 
-            if (lineInComment > 0) {
-                column -= 1 + prefix.lastIndexOf("\n");
-            } else {
-
-                // 2 is for `/*`
-                column += baseLoc.column + 2;
-            }
-
-            return {
-                line: baseLoc.line + lineInComment,
-                column: column
-            };
+            return sourceCode.getLocFromIndex(comment.range[0] + 2 + getColumnInComment(variable, comment));
         }
 
         //--------------------------------------------------------------------------
@@ -525,23 +576,23 @@ module.exports = {
         //--------------------------------------------------------------------------
 
         return {
-            "Program:exit": function(programNode) {
-                var unusedVars = collectUnusedVariables(context.getScope(), []);
+            "Program:exit"(programNode) {
+                const unusedVars = collectUnusedVariables(context.getScope(), []);
 
-                for (var i = 0, l = unusedVars.length; i < l; ++i) {
-                    var unusedVar = unusedVars[i];
+                for (let i = 0, l = unusedVars.length; i < l; ++i) {
+                    const unusedVar = unusedVars[i];
 
                     if (unusedVar.eslintExplicitGlobal) {
                         context.report({
                             node: programNode,
                             loc: getLocation(unusedVar),
-                            message: MESSAGE,
+                            message: DEFINED_MESSAGE,
                             data: unusedVar
                         });
                     } else if (unusedVar.defs.length > 0) {
                         context.report({
                             node: unusedVar.identifiers[0],
-                            message: MESSAGE,
+                            message: unusedVar.references.some(ref => ref.isWrite()) ? ASSIGNED_MESSAGE : DEFINED_MESSAGE,
                             data: unusedVar
                         });
                     }

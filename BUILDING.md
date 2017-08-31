@@ -1,6 +1,6 @@
-## Building Node.js
+# Building Node.js
 
-Depending on what platform or features you require the build process may
+Depending on what platform or features you require, the build process may
 differ slightly. After you've successfully built a binary, running the
 test suite to validate that the binary works as intended is a good next step.
 
@@ -8,89 +8,154 @@ If you consistently can reproduce a test failure, search for it in the
 [Node.js issue tracker](https://github.com/nodejs/node/issues) or
 file a new issue.
 
+## Supported platforms
 
-### Unix / OS X
+This list of supported platforms is current as of the branch / release to
+which it is attached.
+
+### Input
+
+Node.js relies on V8 and libuv. Therefore, we adopt a subset of their
+supported platforms.
+
+### Strategy
+
+Support is divided into three tiers:
+
+* **Tier 1**: Full test coverage and maintenance by the Node.js core team and
+  the broader community.
+* **Tier 2**: Full test coverage but more limited maintenance,
+  often provided by the vendor of the platform.
+* **Experimental**: May not compile reliably or test suite may not pass.
+  These are often working to be promoted to Tier 2 but are not quite ready.
+  There is at least one individual actively providing maintenance and the team
+  is striving to broaden quality and reliability of support.
+
+### Supported platforms
+
+The community does not build or test against end of life distributions (EoL).
+Thus we do not recommend that you use Node on end of life or unsupported platforms
+in production.
+
+|  System      | Support type | Version                          | Architectures        | Notes            |
+|--------------|--------------|----------------------------------|----------------------|------------------|
+| GNU/Linux    | Tier 1       | kernel >= 2.6.32, glibc >= 2.12  | x86, x64, arm, arm64 |                  |
+| macOS        | Tier 1       | >= 10.10                         | x64                  |                  |
+| Windows      | Tier 1       | >= Windows 7 / 2008 R2           | x86, x64             | vs2015 or vs2017 |
+| SmartOS      | Tier 2       | >= 15 < 16.4                     | x86, x64             | see note1        |
+| FreeBSD      | Tier 2       | >= 10                            | x64                  |                  |
+| GNU/Linux    | Tier 2       | kernel >= 3.13.0, glibc >= 2.19  | ppc64le >=power8     |                  |
+| AIX          | Tier 2       | >= 7.1 TL04                      | ppc64be >=power7     |                  |
+| GNU/Linux    | Tier 2       | kernel >= 3.10, glibc >= 2.17    | s390x                |                  |
+| macOS        | Experimental | >= 10.8 < 10.10                  | x64                  | no test coverage |
+| Linux (musl) | Experimental | musl >= 1.0                      | x64                  |                  |
+
+note1 - The gcc4.8-libs package needs to be installed, because node
+  binaries have been built with GCC 4.8, for which runtime libraries are not
+  installed by default. For these node versions, the recommended binaries
+  are the ones available in pkgsrc, not the one available from nodejs.org.
+  Note that the binaries downloaded from the pkgsrc repositories are not
+  officially supported by the Node.js project, and instead are supported
+  by Joyent. SmartOS images >= 16.4 are not supported because
+  GCC 4.8 runtime libraries are not available in their pkgsrc repository
+
+### Supported toolchains
+
+Depending on host platform, the selection of toolchains may vary.
+
+#### Unix
+
+* GCC 4.9.4 or newer
+* Clang 3.4.2 or newer
+
+#### Windows
+
+* Visual Studio 2015 or Visual C++ Build Tools 2015 or newer
+
+## Building Node.js on supported platforms
+
+### Unix / macOS
 
 Prerequisites:
 
-* `gcc` and `g++` 4.8 or newer, or
-* `clang` and `clang++` 3.4 or newer
+* `gcc` and `g++` 4.9.4 or newer, or
+* `clang` and `clang++` 3.4.2 or newer (macOS: latest Xcode Command Line Tools)
 * Python 2.6 or 2.7
 * GNU Make 3.81 or newer
 
-On OS X, you will also need:
-* [Xcode](https://developer.apple.com/xcode/download/)
-  * You also need to install the `Command Line Tools` via Xcode. You can find 
-    this under the menu `Xcode -> Preferences -> Downloads`
-  * This step will install `gcc` and the related toolchain containing `make`
+On macOS you will need to install the `Xcode Command Line Tools` by running
+`xcode-select --install`. Alternatively, if you already have the full Xcode
+installed, you can find them under the menu `Xcode -> Open Developer Tool ->
+More Developer Tools...`. This step will install `clang`, `clang++`, and
+`make`.
+* You may want to setup [firewall rules](tools/macosx-firewall.sh)
+to avoid popups asking to accept incoming network connections when running tests:
+
+If the path to your build directory contains a space, the build will likely fail.
+
+```console
+$ sudo ./tools/macosx-firewall.sh
+```
+Running this script will add rules for the executable `node` in the out
+directory and the symbolic `node` link in the project's root directory.
 
 On FreeBSD and OpenBSD, you may also need:
-* libexecinfo (FreeBSD and OpenBSD only)
+* libexecinfo
 
+To build Node.js:
 
-```text
+```console
 $ ./configure
-$ make
-$ [sudo] make install
+$ make -j4
 ```
 
-If your Python binary is in a non-standard location or has a
-non-standard name, run the following instead:
+Running `make` with the `-j4` flag will cause it to run 4 compilation jobs
+concurrently which may significantly reduce build time. The number after `-j`
+can be changed to best suit the number of processor cores on your machine. If
+you run into problems running `make` with concurrency, try running it without
+the `-j4` flag. See the
+[GNU Make Documentation](https://www.gnu.org/software/make/manual/html_node/Parallel.html)
+for more information.
 
-```text
-$ export PYTHON=/path/to/python
-$ $PYTHON ./configure
-$ make
-$ [sudo] make install
-```
+Note that the above requires that `python` resolve to Python 2.6 or 2.7
+and not a newer version.
 
 To run the tests:
 
-```text
+```console
 $ make test
-```
-
-To run the native module tests:
-
-```text
-$ make test-addons
-```
-
-To run the npm test suite:
-
-*note: to run the suite on node v4 or earlier you must first*
-*run `make install`*
-
-```
-$ make test-npm
 ```
 
 To build the documentation:
 
 This will build Node.js first (if necessary) and then use it to build the docs:
 
-```text
+```console
 $ make doc
 ```
 
-If you have an existing Node.js you can build just the docs with:
+If you have an existing Node.js build, you can build just the docs with:
 
-```text
-$ NODE=node make doc-only
+```console
+$ NODE=/path/to/node make doc-only
 ```
-
-(Where `node` is the path to your executable.)
 
 To read the documentation:
 
-```text
+```console
 $ man doc/node.1
 ```
 
 To test if Node.js was built correctly:
 
+```console
+$ ./node -e "console.log('Hello from Node.js ' + process.version)"
 ```
-$ node -e "console.log('Hello from Node.js ' + process.version)"
+
+To install this version of Node.js into a system directory:
+
+```console
+$ [sudo] make install
 ```
 
 
@@ -101,29 +166,35 @@ Prerequisites:
 * [Python 2.6 or 2.7](https://www.python.org/downloads/)
 * One of:
   * [Visual C++ Build Tools](http://landinghub.visualstudio.com/visual-cpp-build-tools)
-  * [Visual Studio](https://www.visualstudio.com/) 2013 / 2015, all editions including the Community edition
-  * [Visual Studio](https://www.visualstudio.com/) Express 2013 / 2015 for Desktop
+  * [Visual Studio 2015 Update 3](https://www.visualstudio.com/), all editions
+    including the Community edition (remember to select
+    "Common Tools for Visual C++ 2015" feature during installation).
+  * [Visual Studio 2017](https://www.visualstudio.com/downloads/), any edition (including the Build Tools SKU).
+    **Required Components:** "MSbuild", "VC++ 2017 v141 toolset" and at least one of the Windows SDKs.
+    *Note*: For "Windows 10 SDK (10.0.15063.0)" only the "Desktop C++ x86 and x64" flavor is required.
 * Basic Unix tools required for some tests,
   [Git for Windows](http://git-scm.com/download/win) includes Git Bash
   and tools which can be included in the global `PATH`.
 
-```text
-> vcbuild nosign
+If the path to your build directory contains a space, the build will likely fail.
+
+```console
+> .\vcbuild
 ```
 
 To run the tests:
 
-```text
-> vcbuild test
+```console
+> .\vcbuild test
 ```
 
 To test if Node.js was built correctly:
 
-```text
+```console
 > Release\node -e "console.log('Hello from Node.js', process.version)"
 ```
 
-### Android / Android-based devices (e.g., Firefox OS)
+### Android / Android-based devices (e.g. Firefox OS)
 
 Although these instructions for building on Android are provided, please note
 that Android is not an officially supported platform at this time. Patches to
@@ -132,11 +203,11 @@ in the current continuous integration environment. The participation of people
 dedicated and determined to improve Android building, testing, and support is
 encouraged.
 
-Be sure you have downloaded and extracted [Android NDK]
-(https://developer.android.com/tools/sdk/ndk/index.html)
-before in a folder. Then run:
+Be sure you have downloaded and extracted
+[Android NDK](https://developer.android.com/tools/sdk/ndk/index.html) before in
+a folder. Then run:
 
-```
+```console
 $ ./android-configure /path/to/your/android-ndk
 $ make
 ```
@@ -163,16 +234,16 @@ With the `--download=all`, this may download ICU if you don't have an
 ICU in `deps/icu`. (The embedded `small-icu` included in the default
 Node.js source does not include all locales.)
 
-##### Unix / OS X:
+##### Unix / macOS:
 
-```text
+```console
 $ ./configure --with-intl=full-icu --download=all
 ```
 
 ##### Windows:
 
-```text
-> vcbuild full-icu download-all
+```console
+> .\vcbuild full-icu download-all
 ```
 
 #### Building without Intl support
@@ -180,21 +251,21 @@ $ ./configure --with-intl=full-icu --download=all
 The `Intl` object will not be available, nor some other APIs such as
 `String.normalize`.
 
-##### Unix / OS X:
+##### Unix / macOS:
 
-```text
+```console
 $ ./configure --without-intl
 ```
 
 ##### Windows:
 
-```text
-> vcbuild without-intl
+```console
+> .\vcbuild without-intl
 ```
 
-#### Use existing installed ICU (Unix / OS X only):
+#### Use existing installed ICU (Unix / macOS only):
 
-```text
+```console
 $ pkg-config --modversion icu-i18n && ./configure --with-intl=system-icu
 ```
 
@@ -208,16 +279,20 @@ You can find other ICU releases at
 Download the file named something like `icu4c-**##.#**-src.tgz` (or
 `.zip`).
 
-##### Unix / OS X
+##### Unix / macOS
 
-```text
-# from an already-unpacked ICU:
+From an already-unpacked ICU:
+```console
 $ ./configure --with-intl=[small-icu,full-icu] --with-icu-source=/path/to/icu
+```
 
-# from a local ICU tarball
+From a local ICU tarball:
+```console
 $ ./configure --with-intl=[small-icu,full-icu] --with-icu-source=/path/to/icu.tgz
+```
 
-# from a tarball URL
+From a tarball URL:
+```console
 $ ./configure --with-intl=full-icu --with-icu-source=http://url/to/icu.tgz
 ```
 
@@ -227,8 +302,8 @@ First unpack latest ICU to `deps/icu`
 [icu4c-**##.#**-src.tgz](http://icu-project.org/download) (or `.zip`)
 as `deps/icu` (You'll have: `deps/icu/source/...`)
 
-```text
-> vcbuild full-icu
+```console
+> .\vcbuild full-icu
 ```
 
 ## Building Node.js with FIPS-compliant OpenSSL
@@ -236,13 +311,15 @@ as `deps/icu` (You'll have: `deps/icu/source/...`)
 NOTE: Windows is not yet supported
 
 It is possible to build Node.js with
-[OpenSSL FIPS module](https://www.openssl.org/docs/fips/fipsnotes.html).
+[OpenSSL FIPS module](https://www.openssl.org/docs/fipsnotes.html).
 
 **Note**: building in this way does **not** allow you to claim that the
 runtime is FIPS 140-2 validated. Instead you can indicate that the runtime
-uses a validated module. See the [security policy](http://csrc.nist.gov/groups/STM/cmvp/documents/140-1/140sp/140sp1747.pdf)
+uses a validated module. See the
+[security policy](http://csrc.nist.gov/groups/STM/cmvp/documents/140-1/140sp/140sp1747.pdf)
 page 60 for more details. In addition, the validation for the underlying module
-is only valid if it is deployed in accordance with its [security policy](http://csrc.nist.gov/groups/STM/cmvp/documents/140-1/140sp/140sp1747.pdf).
+is only valid if it is deployed in accordance with its
+[security policy](http://csrc.nist.gov/groups/STM/cmvp/documents/140-1/140sp/140sp1747.pdf).
 If you need FIPS validated cryptography it is recommended that you read both
 the [security policy](http://csrc.nist.gov/groups/STM/cmvp/documents/140-1/140sp/140sp1747.pdf)
 and [user guide](https://openssl.org/docs/fips/UserGuide-2.0.pdf).
@@ -270,6 +347,6 @@ and [user guide](https://openssl.org/docs/fips/UserGuide-2.0.pdf).
 6. Get into Node.js checkout folder
 7. `./configure --openssl-fips=/path/to/openssl-fips/installdir`
    For example on ubuntu 12 the installation directory was
-   /usr/local/ssl/fips-2.0
+   `/usr/local/ssl/fips-2.0`
 8. Build Node.js with `make -j`
-9. Verify with `node -p "process.versions.openssl"` (`1.0.2a-fips`)
+9. Verify with `node -p "process.versions.openssl"` (for example `1.0.2a-fips`)

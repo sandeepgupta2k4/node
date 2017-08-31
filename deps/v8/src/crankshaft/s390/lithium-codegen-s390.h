@@ -116,7 +116,8 @@ class LCodeGen : public LCodeGenBase {
   MemOperand PrepareKeyedOperand(Register key, Register base,
                                  bool key_is_constant, bool key_is_tagged,
                                  int constant_key, int element_size_shift,
-                                 int base_offset);
+                                 int base_offset,
+                                 bool keyMaybeNegative = true);
 
   // Emit frame translation commands for an environment.
   void WriteTranslation(LEnvironment* environment, Translation* translation);
@@ -127,8 +128,6 @@ class LCodeGen : public LCodeGenBase {
 #undef DECLARE_DO
 
  private:
-  LanguageMode language_mode() const { return info()->language_mode(); }
-
   Scope* scope() const { return scope_; }
 
   Register scratch0() { return kLithiumScratch; }
@@ -208,10 +207,10 @@ class LCodeGen : public LCodeGenBase {
   void RegisterEnvironmentForDeoptimization(LEnvironment* environment,
                                             Safepoint::DeoptMode mode);
   void DeoptimizeIf(Condition condition, LInstruction* instr,
-                    Deoptimizer::DeoptReason deopt_reason,
+                    DeoptimizeReason deopt_reason,
                     Deoptimizer::BailoutType bailout_type, CRegister cr = cr7);
   void DeoptimizeIf(Condition condition, LInstruction* instr,
-                    Deoptimizer::DeoptReason deopt_reason, CRegister cr = cr7);
+                    DeoptimizeReason deopt_reason, CRegister cr = cr7);
 
   void AddToTranslation(LEnvironment* environment, Translation* translation,
                         LOperand* op, bool is_tagged, bool is_uint32,
@@ -229,15 +228,13 @@ class LCodeGen : public LCodeGenBase {
   void EmitInteger32MathAbs(LMathAbs* instr);
 #endif
 
-  // Support for recording safepoint and position information.
+  // Support for recording safepoint information.
   void RecordSafepoint(LPointerMap* pointers, Safepoint::Kind kind,
                        int arguments, Safepoint::DeoptMode mode);
   void RecordSafepoint(LPointerMap* pointers, Safepoint::DeoptMode mode);
   void RecordSafepoint(Safepoint::DeoptMode mode);
   void RecordSafepointWithRegisters(LPointerMap* pointers, int arguments,
                                     Safepoint::DeoptMode mode);
-
-  void RecordAndWritePosition(int position) override;
 
   static Condition TokenToCondition(Token::Value op);
   void EmitGoto(int block);
@@ -279,8 +276,6 @@ class LCodeGen : public LCodeGenBase {
 
   template <class T>
   void EmitVectorLoadICRegisters(T* instr);
-  template <class T>
-  void EmitVectorStoreICRegisters(T* instr);
 
   ZoneList<Deoptimizer::JumpTableEntry> jump_table_;
   Scope* const scope_;
@@ -298,21 +293,9 @@ class LCodeGen : public LCodeGenBase {
 
   class PushSafepointRegistersScope final BASE_EMBEDDED {
    public:
-    explicit PushSafepointRegistersScope(LCodeGen* codegen)
-        : codegen_(codegen) {
-      DCHECK(codegen_->info()->is_calling());
-      DCHECK(codegen_->expected_safepoint_kind_ == Safepoint::kSimple);
-      codegen_->expected_safepoint_kind_ = Safepoint::kWithRegisters;
-      StoreRegistersStateStub stub(codegen_->isolate());
-      codegen_->masm_->CallStub(&stub);
-    }
+    explicit PushSafepointRegistersScope(LCodeGen* codegen);
 
-    ~PushSafepointRegistersScope() {
-      DCHECK(codegen_->expected_safepoint_kind_ == Safepoint::kWithRegisters);
-      RestoreRegistersStateStub stub(codegen_->isolate());
-      codegen_->masm_->CallStub(&stub);
-      codegen_->expected_safepoint_kind_ = Safepoint::kSimple;
-    }
+    ~PushSafepointRegistersScope();
 
    private:
     LCodeGen* codegen_;

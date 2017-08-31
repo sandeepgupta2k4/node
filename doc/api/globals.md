@@ -1,15 +1,26 @@
 # Global Objects
 
+<!--introduced_in=v0.10.0-->
 <!-- type=misc -->
 
-These objects are available in all modules. Some of these objects aren't
-actually in the global scope but in the module scope - this will be noted.
+These objects are available in all modules. The following variables may appear
+to be global but are not. They exist only in the scope of modules, see the
+[module system documentation][]:
+
+- [`__dirname`][]
+- [`__filename`][]
+- [`exports`][]
+- [`module`][]
+- [`require()`][]
 
 The objects listed here are specific to Node.js. There are a number of
 [built-in objects][] that are part of the JavaScript language itself, which are
 also globally accessible.
 
 ## Class: Buffer
+<!-- YAML
+added: v0.1.103
+-->
 
 <!-- type=global -->
 
@@ -19,70 +30,43 @@ Used to handle binary data. See the [buffer section][].
 
 ## \_\_dirname
 
-<!-- type=var -->
-
-* {String}
-
-The name of the directory that the currently executing script resides in.
-
-Example: running `node example.js` from `/Users/mjr`
-
-```js
-console.log(__dirname);
-// /Users/mjr
-```
-
-`__dirname` isn't actually a global but rather local to each module.
-
-For instance, given two modules: `a` and `b`, where `b` is a dependency of
-`a` and there is a directory structure of:
-
-* `/Users/mjr/app/a.js`
-* `/Users/mjr/app/node_modules/b/b.js`
-
-References to `__dirname` within `b.js` will return
-`/Users/mjr/app/node_modules/b` while references to `__dirname` within `a.js`
-will return `/Users/mjr/app`.
+This variable may appear to be global but is not. See [`__dirname`].
 
 ## \_\_filename
 
-<!-- type=var -->
-
-* {String}
-
-The filename of the code being executed.  This is the resolved absolute path
-of this code file.  For a main program this is not necessarily the same
-filename used in the command line.  The value inside a module is the path
-to that module file.
-
-Example: running `node example.js` from `/Users/mjr`
-
-```js
-console.log(__filename);
-// /Users/mjr/example.js
-```
-
-`__filename` isn't actually a global but rather local to each module.
+This variable may appear to be global but is not. See [`__filename`].
 
 ## clearImmediate(immediateObject)
+<!-- YAML
+added: v0.9.1
+-->
 
 <!--type=global-->
 
 [`clearImmediate`] is described in the [timers][] section.
 
 ## clearInterval(intervalObject)
+<!-- YAML
+added: v0.0.1
+-->
 
 <!--type=global-->
 
 [`clearInterval`] is described in the [timers][] section.
 
 ## clearTimeout(timeoutObject)
+<!-- YAML
+added: v0.0.1
+-->
 
 <!--type=global-->
 
 [`clearTimeout`] is described in the [timers][] section.
 
 ## console
+<!-- YAML
+added: v0.1.100
+-->
 
 <!-- type=global -->
 
@@ -92,42 +76,30 @@ Used to print to stdout and stderr. See the [`console`][] section.
 
 ## exports
 
-<!-- type=var -->
-
-A reference to the `module.exports` that is shorter to type.
-See [module system documentation][] for details on when to use `exports` and
-when to use `module.exports`.
-
-`exports` isn't actually a global but rather local to each module.
-
-See the [module system documentation][] for more information.
+This variable may appear to be global but is not. See [`exports`].
 
 ## global
+<!-- YAML
+added: v0.1.27
+-->
 
 <!-- type=global -->
 
 * {Object} The global namespace object.
 
-In browsers, the top-level scope is the global scope. That means that in
-browsers if you're in the global scope `var something` will define a global
-variable. In Node.js this is different. The top-level scope is not the global
-scope; `var something` inside an Node.js module will be local to that module.
+In browsers, the top-level scope is the global scope. This means that
+within the browser `var something` will define a new global variable. In
+Node.js this is different. The top-level scope is not the global scope;
+`var something` inside a Node.js module will be local to that module.
 
 ## module
 
-<!-- type=var -->
-
-* {Object}
-
-A reference to the current module. In particular
-`module.exports` is used for defining what a module exports and makes
-available through `require()`.
-
-`module` isn't actually a global but rather local to each module.
-
-See the [module system documentation][] for more information.
+This variable may appear to be global but is not. See [`module`].
 
 ## process
+<!-- YAML
+added: v0.1.7
+-->
 
 <!-- type=global -->
 
@@ -137,80 +109,49 @@ The process object. See the [`process` object][] section.
 
 ## require()
 
-<!-- type=var -->
+This variable may appear to be global but is not. See [`require()`].
 
-* {Function}
-
-To require modules. See the [Modules][] section.  `require` isn't actually a
-global but rather local to each module.
-
-### require.cache
-
-* {Object}
-
-Modules are cached in this object when they are required. By deleting a key
-value from this object, the next `require` will reload the module. Note that
-this does not apply to [native addons][], for which reloading will result in an
-Error.
-
-### require.extensions
-
-    Stability: 0 - Deprecated
-
-* {Object}
-
-Instruct `require` on how to handle certain file extensions.
-
-Process files with the extension `.sjs` as `.js`:
-
-```js
-require.extensions['.sjs'] = require.extensions['.js'];
-```
-
-**Deprecated**  In the past, this list has been used to load
-non-JavaScript modules into Node.js by compiling them on-demand.
-However, in practice, there are much better ways to do this, such as
-loading modules via some other Node.js program, or compiling them to
-JavaScript ahead of time.
-
-Since the Module system is locked, this feature will probably never go
-away.  However, it may have subtle bugs and complexities that are best
-left untouched.
-
-### require.resolve()
-
-Use the internal `require()` machinery to look up the location of a module,
-but rather than loading the module, just return the resolved filename.
-
-## setImmediate(callback[, arg][, ...])
+## setImmediate(callback[, ...args])
+<!-- YAML
+added: v0.9.1
+-->
 
 <!-- type=global -->
 
 [`setImmediate`] is described in the [timers][] section.
 
-## setInterval(callback, delay[, arg][, ...])
+## setInterval(callback, delay[, ...args])
+<!-- YAML
+added: v0.0.1
+-->
 
 <!-- type=global -->
 
 [`setInterval`] is described in the [timers][] section.
 
-## setTimeout(callback, delay[, arg][, ...])
+## setTimeout(callback, delay[, ...args])
+<!-- YAML
+added: v0.0.1
+-->
 
 <!-- type=global -->
 
 [`setTimeout`] is described in the [timers][] section.
 
-[`console`]: console.html
-[`process` object]: process.html#process_process
-[buffer section]: buffer.html
-[module system documentation]: modules.html
-[Modules]: modules.html#modules_modules
-[native addons]: addons.html
-[timers]: timers.html
+[`__dirname`]: modules.html#modules_dirname
+[`__filename`]: modules.html#modules_filename
 [`clearImmediate`]: timers.html#timers_clearimmediate_immediate
 [`clearInterval`]: timers.html#timers_clearinterval_timeout
 [`clearTimeout`]: timers.html#timers_cleartimeout_timeout
-[`setImmediate`]: timers.html#timers_setimmediate_callback_arg
-[`setInterval`]: timers.html#timers_setinterval_callback_delay_arg
-[`setTimeout`]: timers.html#timers_settimeout_callback_delay_arg
+[`console`]: console.html
+[`exports`]: modules.html#modules_exports
+[`module`]: modules.html#modules_module
+[`process` object]: process.html#process_process
+[`require()`]: modules.html#modules_require
+[`setImmediate`]: timers.html#timers_setimmediate_callback_args
+[`setInterval`]: timers.html#timers_setinterval_callback_delay_args
+[`setTimeout`]: timers.html#timers_settimeout_callback_delay_args
+[buffer section]: buffer.html
 [built-in objects]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects
+[module system documentation]: modules.html
+[timers]: timers.html

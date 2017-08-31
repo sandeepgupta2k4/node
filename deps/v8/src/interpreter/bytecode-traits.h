@@ -5,7 +5,7 @@
 #ifndef V8_INTERPRETER_BYTECODE_TRAITS_H_
 #define V8_INTERPRETER_BYTECODE_TRAITS_H_
 
-#include "src/interpreter/bytecodes.h"
+#include "src/interpreter/bytecode-operands.h"
 
 namespace v8 {
 namespace internal {
@@ -30,214 +30,123 @@ OPERAND_TYPE_INFO_LIST(DECLARE_OPERAND_TYPE_INFO)
 
 template <OperandType>
 struct OperandTraits {
-  typedef OperandTypeInfoTraits<OperandTypeInfo::kNone> TypeInfo;
+  typedef OperandTypeInfoTraits<OperandTypeInfo::kNone> TypeInfoTraits;
+  static const OperandTypeInfo kOperandTypeInfo = OperandTypeInfo::kNone;
 };
 
-#define DECLARE_OPERAND_TYPE_TRAITS(Name, InfoType)   \
-  template <>                                         \
-  struct OperandTraits<OperandType::k##Name> {        \
-    typedef OperandTypeInfoTraits<InfoType> TypeInfo; \
+#define DECLARE_OPERAND_TYPE_TRAITS(Name, InfoType)           \
+  template <>                                                 \
+  struct OperandTraits<OperandType::k##Name> {                \
+    typedef OperandTypeInfoTraits<InfoType> TypeInfoTraits;   \
+    static const OperandTypeInfo kOperandTypeInfo = InfoType; \
   };
 OPERAND_TYPE_LIST(DECLARE_OPERAND_TYPE_TRAITS)
 #undef DECLARE_OPERAND_TYPE_TRAITS
 
-template <OperandType>
-struct RegisterOperandTraits {
-  static const int kIsRegisterOperand = 0;
-};
-
-#define DECLARE_REGISTER_OPERAND(Name, _)              \
-  template <>                                          \
-  struct RegisterOperandTraits<OperandType::k##Name> { \
-    static const int kIsRegisterOperand = 1;           \
+template <OperandType operand_type, OperandScale operand_scale>
+struct OperandScaler {
+  template <bool, OperandSize, OperandScale>
+  struct Helper {
+    static const int kSize = 0;
   };
-REGISTER_OPERAND_TYPE_LIST(DECLARE_REGISTER_OPERAND)
-#undef DECLARE_REGISTER_OPERAND
+  template <OperandSize size, OperandScale scale>
+  struct Helper<false, size, scale> {
+    static const int kSize = static_cast<int>(size);
+  };
+  template <OperandSize size, OperandScale scale>
+  struct Helper<true, size, scale> {
+    static const int kSize = static_cast<int>(size) * static_cast<int>(scale);
+  };
 
-template <AccumulatorUse, OperandType...>
-struct BytecodeTraits {};
-
-template <AccumulatorUse accumulator_use, OperandType operand_0,
-          OperandType operand_1, OperandType operand_2, OperandType operand_3>
-struct BytecodeTraits<accumulator_use, operand_0, operand_1, operand_2,
-                      operand_3> {
-  static OperandType GetOperandType(int i) {
-    DCHECK(0 <= i && i < kOperandCount);
-    const OperandType kOperands[] = {operand_0, operand_1, operand_2,
-                                     operand_3};
-    return kOperands[i];
-  }
-
-  template <OperandType ot>
-  static inline bool HasAnyOperandsOfType() {
-    return operand_0 == ot || operand_1 == ot || operand_2 == ot ||
-           operand_3 == ot;
-  }
-
-  static inline bool IsScalable() {
-    return (OperandTraits<operand_0>::TypeInfo::kIsScalable |
-            OperandTraits<operand_1>::TypeInfo::kIsScalable |
-            OperandTraits<operand_2>::TypeInfo::kIsScalable |
-            OperandTraits<operand_3>::TypeInfo::kIsScalable);
-  }
-
-  static const AccumulatorUse kAccumulatorUse = accumulator_use;
-  static const int kOperandCount = 4;
-  static const int kRegisterOperandCount =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand +
-      RegisterOperandTraits<operand_1>::kIsRegisterOperand +
-      RegisterOperandTraits<operand_2>::kIsRegisterOperand +
-      RegisterOperandTraits<operand_3>::kIsRegisterOperand;
-  static const int kRegisterOperandBitmap =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand +
-      (RegisterOperandTraits<operand_1>::kIsRegisterOperand << 1) +
-      (RegisterOperandTraits<operand_2>::kIsRegisterOperand << 2) +
-      (RegisterOperandTraits<operand_3>::kIsRegisterOperand << 3);
+  static const int kSize =
+      Helper<OperandTraits<operand_type>::TypeInfoTraits::kIsScalable,
+             OperandTraits<operand_type>::TypeInfoTraits::kUnscaledSize,
+             operand_scale>::kSize;
+  static const OperandSize kOperandSize = static_cast<OperandSize>(kSize);
 };
 
-template <AccumulatorUse accumulator_use, OperandType operand_0,
-          OperandType operand_1, OperandType operand_2>
-struct BytecodeTraits<accumulator_use, operand_0, operand_1, operand_2> {
-  static inline OperandType GetOperandType(int i) {
-    DCHECK(0 <= i && i <= 2);
-    const OperandType kOperands[] = {operand_0, operand_1, operand_2};
-    return kOperands[i];
-  }
-
-  template <OperandType ot>
-  static inline bool HasAnyOperandsOfType() {
-    return operand_0 == ot || operand_1 == ot || operand_2 == ot;
-  }
-
-  static inline bool IsScalable() {
-    return (OperandTraits<operand_0>::TypeInfo::kIsScalable |
-            OperandTraits<operand_1>::TypeInfo::kIsScalable |
-            OperandTraits<operand_2>::TypeInfo::kIsScalable);
-  }
-
-  static const AccumulatorUse kAccumulatorUse = accumulator_use;
-  static const int kOperandCount = 3;
-  static const int kRegisterOperandCount =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand +
-      RegisterOperandTraits<operand_1>::kIsRegisterOperand +
-      RegisterOperandTraits<operand_2>::kIsRegisterOperand;
-  static const int kRegisterOperandBitmap =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand +
-      (RegisterOperandTraits<operand_1>::kIsRegisterOperand << 1) +
-      (RegisterOperandTraits<operand_2>::kIsRegisterOperand << 2);
+template <int... values>
+struct SumHelper;
+template <int value>
+struct SumHelper<value> {
+  static const int kValue = value;
+};
+template <int value, int... values>
+struct SumHelper<value, values...> {
+  static const int kValue = value + SumHelper<values...>::kValue;
 };
 
-template <AccumulatorUse accumulator_use, OperandType operand_0,
-          OperandType operand_1>
-struct BytecodeTraits<accumulator_use, operand_0, operand_1> {
-  static inline OperandType GetOperandType(int i) {
-    DCHECK(0 <= i && i < kOperandCount);
-    const OperandType kOperands[] = {operand_0, operand_1};
-    return kOperands[i];
-  }
-
-  template <OperandType ot>
-  static inline bool HasAnyOperandsOfType() {
-    return operand_0 == ot || operand_1 == ot;
-  }
-
-  static inline bool IsScalable() {
-    return (OperandTraits<operand_0>::TypeInfo::kIsScalable |
-            OperandTraits<operand_1>::TypeInfo::kIsScalable);
-  }
-
+template <AccumulatorUse accumulator_use, OperandType... operands>
+struct BytecodeTraits {
+  static const OperandType kOperandTypes[];
+  static const OperandTypeInfo kOperandTypeInfos[];
+  static const OperandSize kSingleScaleOperandSizes[];
+  static const OperandSize kDoubleScaleOperandSizes[];
+  static const OperandSize kQuadrupleScaleOperandSizes[];
+  static const int kSingleScaleSize = SumHelper<
+      1, OperandScaler<operands, OperandScale::kSingle>::kSize...>::kValue;
+  static const int kDoubleScaleSize = SumHelper<
+      1, OperandScaler<operands, OperandScale::kDouble>::kSize...>::kValue;
+  static const int kQuadrupleScaleSize = SumHelper<
+      1, OperandScaler<operands, OperandScale::kQuadruple>::kSize...>::kValue;
   static const AccumulatorUse kAccumulatorUse = accumulator_use;
-  static const int kOperandCount = 2;
-  static const int kRegisterOperandCount =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand +
-      RegisterOperandTraits<operand_1>::kIsRegisterOperand;
-  static const int kRegisterOperandBitmap =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand +
-      (RegisterOperandTraits<operand_1>::kIsRegisterOperand << 1);
+  static const int kOperandCount = sizeof...(operands);
 };
 
-template <AccumulatorUse accumulator_use, OperandType operand_0>
-struct BytecodeTraits<accumulator_use, operand_0> {
-  static inline OperandType GetOperandType(int i) {
-    DCHECK(i == 0);
-    return operand_0;
-  }
-
-  template <OperandType ot>
-  static inline bool HasAnyOperandsOfType() {
-    return operand_0 == ot;
-  }
-
-  static inline bool IsScalable() {
-    return OperandTraits<operand_0>::TypeInfo::kIsScalable;
-  }
-
-  static const AccumulatorUse kAccumulatorUse = accumulator_use;
-  static const int kOperandCount = 1;
-  static const int kRegisterOperandCount =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand;
-  static const int kRegisterOperandBitmap =
-      RegisterOperandTraits<operand_0>::kIsRegisterOperand;
-};
+template <AccumulatorUse accumulator_use, OperandType... operands>
+STATIC_CONST_MEMBER_DEFINITION const OperandType
+    BytecodeTraits<accumulator_use, operands...>::kOperandTypes[] = {
+        operands...};
+template <AccumulatorUse accumulator_use, OperandType... operands>
+STATIC_CONST_MEMBER_DEFINITION const OperandTypeInfo
+    BytecodeTraits<accumulator_use, operands...>::kOperandTypeInfos[] = {
+        OperandTraits<operands>::kOperandTypeInfo...};
+template <AccumulatorUse accumulator_use, OperandType... operands>
+STATIC_CONST_MEMBER_DEFINITION const OperandSize
+    BytecodeTraits<accumulator_use, operands...>::kSingleScaleOperandSizes[] = {
+        OperandScaler<operands, OperandScale::kSingle>::kOperandSize...};
+template <AccumulatorUse accumulator_use, OperandType... operands>
+STATIC_CONST_MEMBER_DEFINITION const OperandSize
+    BytecodeTraits<accumulator_use, operands...>::kDoubleScaleOperandSizes[] = {
+        OperandScaler<operands, OperandScale::kDouble>::kOperandSize...};
+template <AccumulatorUse accumulator_use, OperandType... operands>
+STATIC_CONST_MEMBER_DEFINITION const OperandSize BytecodeTraits<
+    accumulator_use, operands...>::kQuadrupleScaleOperandSizes[] = {
+    OperandScaler<operands, OperandScale::kQuadruple>::kOperandSize...};
 
 template <AccumulatorUse accumulator_use>
 struct BytecodeTraits<accumulator_use> {
-  static inline OperandType GetOperandType(int i) {
-    UNREACHABLE();
-    return OperandType::kNone;
-  }
-
-  template <OperandType ot>
-  static inline bool HasAnyOperandsOfType() {
-    return false;
-  }
-
-  static inline bool IsScalable() { return false; }
-
+  static const OperandType kOperandTypes[];
+  static const OperandTypeInfo kOperandTypeInfos[];
+  static const OperandSize kSingleScaleOperandSizes[];
+  static const OperandSize kDoubleScaleOperandSizes[];
+  static const OperandSize kQuadrupleScaleOperandSizes[];
+  static const int kSingleScaleSize = 1;
+  static const int kDoubleScaleSize = 1;
+  static const int kQuadrupleScaleSize = 1;
   static const AccumulatorUse kAccumulatorUse = accumulator_use;
   static const int kOperandCount = 0;
-  static const int kRegisterOperandCount = 0;
-  static const int kRegisterOperandBitmap = 0;
 };
 
-template <bool>
-struct OperandScaler {
-  static int Multiply(int size, int operand_scale) { return 0; }
-};
-
-template <>
-struct OperandScaler<false> {
-  static int Multiply(int size, int operand_scale) { return size; }
-};
-
-template <>
-struct OperandScaler<true> {
-  static int Multiply(int size, int operand_scale) {
-    return size * operand_scale;
-  }
-};
-
-static OperandSize ScaledOperandSize(OperandType operand_type,
-                                     OperandScale operand_scale) {
-  switch (operand_type) {
-#define CASE(Name, TypeInfo)                                                   \
-  case OperandType::k##Name: {                                                 \
-    OperandSize base_size = OperandTypeInfoTraits<TypeInfo>::kUnscaledSize;    \
-    int size =                                                                 \
-        OperandScaler<OperandTypeInfoTraits<TypeInfo>::kIsScalable>::Multiply( \
-            static_cast<int>(base_size), static_cast<int>(operand_scale));     \
-    OperandSize operand_size = static_cast<OperandSize>(size);                 \
-    DCHECK(operand_size == OperandSize::kByte ||                               \
-           operand_size == OperandSize::kShort ||                              \
-           operand_size == OperandSize::kQuad);                                \
-    return operand_size;                                                       \
-  }
-    OPERAND_TYPE_LIST(CASE)
-#undef CASE
-  }
-  UNREACHABLE();
-  return OperandSize::kNone;
-}
+template <AccumulatorUse accumulator_use>
+STATIC_CONST_MEMBER_DEFINITION const OperandType
+    BytecodeTraits<accumulator_use>::kOperandTypes[] = {OperandType::kNone};
+template <AccumulatorUse accumulator_use>
+STATIC_CONST_MEMBER_DEFINITION const OperandTypeInfo
+    BytecodeTraits<accumulator_use>::kOperandTypeInfos[] = {
+        OperandTypeInfo::kNone};
+template <AccumulatorUse accumulator_use>
+STATIC_CONST_MEMBER_DEFINITION const OperandSize
+    BytecodeTraits<accumulator_use>::kSingleScaleOperandSizes[] = {
+        OperandSize::kNone};
+template <AccumulatorUse accumulator_use>
+STATIC_CONST_MEMBER_DEFINITION const OperandSize
+    BytecodeTraits<accumulator_use>::kDoubleScaleOperandSizes[] = {
+        OperandSize::kNone};
+template <AccumulatorUse accumulator_use>
+STATIC_CONST_MEMBER_DEFINITION const OperandSize
+    BytecodeTraits<accumulator_use>::kQuadrupleScaleOperandSizes[] = {
+        OperandSize::kNone};
 
 }  // namespace interpreter
 }  // namespace internal

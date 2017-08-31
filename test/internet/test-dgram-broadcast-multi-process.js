@@ -1,10 +1,33 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 'use strict';
 const common = require('../common');
+if (common.inFreeBSDJail)
+  common.skip('in a FreeBSD jail');
+
 const assert = require('assert');
 const dgram = require('dgram');
 const util = require('util');
 const networkInterfaces = require('os').networkInterfaces();
-const Buffer = require('buffer').Buffer;
 const fork = require('child_process').fork;
 const LOCAL_BROADCAST_HOST = '255.255.255.255';
 const TIMEOUT = common.platformTimeout(5000);
@@ -15,20 +38,17 @@ const messages = [
   Buffer.from('Fourth message to send')
 ];
 
-if (common.inFreeBSDJail) {
-  common.skip('in a FreeBSD jail');
-  return;
-}
+let bindAddress = null;
 
 // Take the first non-internal interface as the address for binding.
 // Ideally, this should check for whether or not an interface is set up for
 // BROADCAST and favor internal/private interfaces.
-get_bindAddress: for (var name in networkInterfaces) {
-  var interfaces = networkInterfaces[name];
-  for (var i = 0; i < interfaces.length; i++) {
-    var localInterface = interfaces[i];
+get_bindAddress: for (const name in networkInterfaces) {
+  const interfaces = networkInterfaces[name];
+  for (let i = 0; i < interfaces.length; i++) {
+    const localInterface = interfaces[i];
     if (!localInterface.internal && localInterface.family === 'IPv4') {
-      var bindAddress = localInterface.address;
+      bindAddress = localInterface.address;
       break get_bindAddress;
     }
   }
@@ -56,9 +76,9 @@ if (process.argv[2] !== 'child') {
   }, TIMEOUT);
 
   //launch child processes
-  for (var x = 0; x < listeners; x++) {
+  for (let x = 0; x < listeners; x++) {
     (function() {
-      var worker = fork(process.argv[1], ['child']);
+      const worker = fork(process.argv[1], ['child']);
       workers[worker.pid] = worker;
 
       worker.messagesReceived = [];
@@ -68,7 +88,7 @@ if (process.argv[2] !== 'child') {
         // don't consider this the true death if the worker
         // has finished successfully
         // or if the exit code is 0
-        if (worker.isDone || code == 0) {
+        if (worker.isDone || code === 0) {
           return;
         }
 
@@ -113,12 +133,12 @@ if (process.argv[2] !== 'child') {
                           'messages. Will now compare.');
 
             Object.keys(workers).forEach(function(pid) {
-              var worker = workers[pid];
+              const worker = workers[pid];
 
-              var count = 0;
+              let count = 0;
 
               worker.messagesReceived.forEach(function(buf) {
-                for (var i = 0; i < messages.length; ++i) {
+                for (let i = 0; i < messages.length; ++i) {
                   if (buf.toString() === messages[i].toString()) {
                     count++;
                     break;
@@ -130,8 +150,11 @@ if (process.argv[2] !== 'child') {
                             worker.pid,
                             count);
 
-              assert.equal(count, messages.length,
-                           'A worker received an invalid multicast message');
+              assert.strictEqual(
+                count,
+                messages.length,
+                'A worker received an invalid multicast message'
+              );
             });
 
             clearTimeout(timer);
@@ -143,7 +166,7 @@ if (process.argv[2] !== 'child') {
     })(x);
   }
 
-  var sendSocket = dgram.createSocket({
+  const sendSocket = dgram.createSocket({
     type: 'udp4',
     reuseAddr: true
   });
@@ -160,7 +183,7 @@ if (process.argv[2] !== 'child') {
   });
 
   sendSocket.sendNext = function() {
-    var buf = messages[i++];
+    const buf = messages[i++];
 
     if (!buf) {
       try { sendSocket.close(); } catch (e) {}
@@ -174,7 +197,7 @@ if (process.argv[2] !== 'child') {
       common.PORT,
       LOCAL_BROADCAST_HOST,
       function(err) {
-        if (err) throw err;
+        assert.ifError(err);
         console.error('[PARENT] sent %s to %s:%s',
                       util.inspect(buf.toString()),
                       LOCAL_BROADCAST_HOST, common.PORT);
@@ -186,15 +209,15 @@ if (process.argv[2] !== 'child') {
 
   function killChildren(children) {
     Object.keys(children).forEach(function(key) {
-      var child = children[key];
+      const child = children[key];
       child.kill();
     });
   }
 }
 
 if (process.argv[2] === 'child') {
-  var receivedMessages = [];
-  var listenSocket = dgram.createSocket({
+  const receivedMessages = [];
+  const listenSocket = dgram.createSocket({
     type: 'udp4',
     reuseAddr: true
   });
@@ -210,9 +233,9 @@ if (process.argv[2] === 'child') {
 
     receivedMessages.push(buf);
 
-    process.send({message: buf.toString()});
+    process.send({ message: buf.toString() });
 
-    if (receivedMessages.length == messages.length) {
+    if (receivedMessages.length === messages.length) {
       process.nextTick(function() {
         listenSocket.close();
       });
@@ -222,14 +245,14 @@ if (process.argv[2] === 'child') {
   listenSocket.on('close', function() {
     //HACK: Wait to exit the process to ensure that the parent
     //process has had time to receive all messages via process.send()
-    //This may be indicitave of some other issue.
+    //This may be indicative of some other issue.
     setTimeout(function() {
       process.exit();
     }, 1000);
   });
 
   listenSocket.on('listening', function() {
-    process.send({listening: true});
+    process.send({ listening: true });
   });
 
   listenSocket.bind(common.PORT);

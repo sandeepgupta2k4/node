@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/ast/ast.h"
 #include "src/ast/ast-expression-rewriter.h"
+#include "src/ast/ast.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -19,11 +20,10 @@ namespace internal {
   } while (false)
 #define NOTHING() DCHECK_NULL(replacement_)
 
-
-void AstExpressionRewriter::VisitDeclarations(
-    ZoneList<Declaration*>* declarations) {
-  for (int i = 0; i < declarations->length(); i++) {
-    AST_REWRITE_LIST_ELEMENT(Declaration, declarations, i);
+void AstExpressionRewriter::VisitDeclarations(Declaration::List* declarations) {
+  for (Declaration::List::Iterator it = declarations->begin();
+       it != declarations->end(); ++it) {
+    AST_REWRITE(Declaration, *it, it = replacement);
   }
 }
 
@@ -31,7 +31,7 @@ void AstExpressionRewriter::VisitDeclarations(
 void AstExpressionRewriter::VisitStatements(ZoneList<Statement*>* statements) {
   for (int i = 0; i < statements->length(); i++) {
     AST_REWRITE_LIST_ELEMENT(Statement, statements, i);
-    // Not stopping when a jump statement is found.
+    if (statements->at(i)->IsJump()) break;
   }
 }
 
@@ -61,18 +61,6 @@ void AstExpressionRewriter::VisitFunctionDeclaration(
     FunctionDeclaration* node) {
   // Not visiting `proxy_`.
   AST_REWRITE_PROPERTY(FunctionLiteral, node, fun);
-}
-
-
-void AstExpressionRewriter::VisitImportDeclaration(ImportDeclaration* node) {
-  // Not visiting `proxy_`.
-  NOTHING();
-}
-
-
-void AstExpressionRewriter::VisitExportDeclaration(ExportDeclaration* node) {
-  // Not visiting `proxy_`.
-  NOTHING();
 }
 
 
@@ -169,12 +157,10 @@ void AstExpressionRewriter::VisitForInStatement(ForInStatement* node) {
 
 
 void AstExpressionRewriter::VisitForOfStatement(ForOfStatement* node) {
-  AST_REWRITE_PROPERTY(Expression, node, each);
   AST_REWRITE_PROPERTY(Expression, node, assign_iterator);
   AST_REWRITE_PROPERTY(Expression, node, next_result);
   AST_REWRITE_PROPERTY(Expression, node, result_done);
   AST_REWRITE_PROPERTY(Expression, node, assign_each);
-  AST_REWRITE_PROPERTY(Expression, node, subject);
   AST_REWRITE_PROPERTY(Statement, node, body);
 }
 
@@ -215,10 +201,9 @@ void AstExpressionRewriter::VisitClassLiteral(ClassLiteral* node) {
   AST_REWRITE_PROPERTY(FunctionLiteral, node, constructor);
   ZoneList<typename ClassLiteral::Property*>* properties = node->properties();
   for (int i = 0; i < properties->length(); i++) {
-    VisitObjectLiteralProperty(properties->at(i));
+    VisitLiteralProperty(properties->at(i));
   }
 }
-
 
 void AstExpressionRewriter::VisitNativeFunctionLiteral(
     NativeFunctionLiteral* node) {
@@ -257,13 +242,11 @@ void AstExpressionRewriter::VisitObjectLiteral(ObjectLiteral* node) {
   REWRITE_THIS(node);
   ZoneList<typename ObjectLiteral::Property*>* properties = node->properties();
   for (int i = 0; i < properties->length(); i++) {
-    VisitObjectLiteralProperty(properties->at(i));
+    VisitLiteralProperty(properties->at(i));
   }
 }
 
-
-void AstExpressionRewriter::VisitObjectLiteralProperty(
-    ObjectLiteralProperty* property) {
+void AstExpressionRewriter::VisitLiteralProperty(LiteralProperty* property) {
   if (property == nullptr) return;
   AST_REWRITE_PROPERTY(Expression, property, key);
   AST_REWRITE_PROPERTY(Expression, property, value);
@@ -282,8 +265,7 @@ void AstExpressionRewriter::VisitAssignment(Assignment* node) {
   AST_REWRITE_PROPERTY(Expression, node, value);
 }
 
-
-void AstExpressionRewriter::VisitYield(Yield* node) {
+void AstExpressionRewriter::VisitSuspend(Suspend* node) {
   REWRITE_THIS(node);
   AST_REWRITE_PROPERTY(Expression, node, generator_object);
   AST_REWRITE_PROPERTY(Expression, node, expression);
@@ -390,6 +372,15 @@ void AstExpressionRewriter::VisitEmptyParentheses(EmptyParentheses* node) {
   NOTHING();
 }
 
+void AstExpressionRewriter::VisitGetIterator(GetIterator* node) {
+  AST_REWRITE_PROPERTY(Expression, node, iterable);
+}
+
+void AstExpressionRewriter::VisitImportCallExpression(
+    ImportCallExpression* node) {
+  REWRITE_THIS(node);
+  AST_REWRITE_PROPERTY(Expression, node, argument);
+}
 
 void AstExpressionRewriter::VisitDoExpression(DoExpression* node) {
   REWRITE_THIS(node);

@@ -34,6 +34,7 @@ import time
 
 from . import execution
 from . import junit_output
+from . import statusfile
 
 
 ABS_PATH_PREFIX = os.getcwd() + os.sep
@@ -51,9 +52,6 @@ class ProgressIndicator(object):
     pass
 
   def Done(self):
-    pass
-
-  def AboutToRun(self, test):
     pass
 
   def HasRun(self, test, has_unexpected_output):
@@ -146,10 +144,6 @@ class SimpleProgressIndicator(ProgressIndicator):
 
 class VerboseProgressIndicator(SimpleProgressIndicator):
 
-  def AboutToRun(self, test):
-    print 'Starting %s...' % test.GetLabel()
-    sys.stdout.flush()
-
   def HasRun(self, test, has_unexpected_output):
     if has_unexpected_output:
       if test.output.HasCrashed():
@@ -200,10 +194,8 @@ class CompactProgressIndicator(ProgressIndicator):
     self.PrintProgress('Done')
     print ""  # Line break.
 
-  def AboutToRun(self, test):
-    self.PrintProgress(test.GetLabel())
-
   def HasRun(self, test, has_unexpected_output):
+    self.PrintProgress(test.GetLabel())
     if has_unexpected_output:
       self.ClearLine(self.last_status_length)
       self.PrintFailureHeader(test)
@@ -329,6 +321,12 @@ class JsonTestProgressIndicator(ProgressIndicator):
         # Buildbot might start out with an empty file.
         complete_results = json.loads(f.read() or "[]")
 
+    duration_mean = None
+    if self.tests:
+      # Get duration mean.
+      duration_mean = (
+          sum(t.duration for t in self.tests) / float(len(self.tests)))
+
     # Sort tests by duration.
     timed_tests = [t for t in self.tests if t.duration is not None]
     timed_tests.sort(lambda a, b: cmp(b.duration, a.duration))
@@ -338,6 +336,7 @@ class JsonTestProgressIndicator(ProgressIndicator):
         "flags": test.flags,
         "command": self._EscapeCommand(test).replace(ABS_PATH_PREFIX, ""),
         "duration": test.duration,
+        "marked_slow": statusfile.IsSlow(test.outcomes),
       } for test in timed_tests[:20]
     ]
 
@@ -346,6 +345,8 @@ class JsonTestProgressIndicator(ProgressIndicator):
       "mode": self.mode,
       "results": self.results,
       "slowest_tests": slowest_tests,
+      "duration_mean": duration_mean,
+      "test_total": len(self.tests),
     })
 
     with open(self.json_test_results, "w") as f:
@@ -377,6 +378,58 @@ class JsonTestProgressIndicator(ProgressIndicator):
       "target_name": test.suite.shell(),
       "variant": test.variant,
     })
+
+
+class FlakinessTestProgressIndicator(ProgressIndicator):
+
+  def __init__(self, json_test_results):
+    self.json_test_results = json_test_results
+    self.results = {}
+    self.summary = {
+      "PASS": 0,
+      "FAIL": 0,
+      "CRASH": 0,
+      "TIMEOUT": 0,
+    }
+    self.seconds_since_epoch = time.time()
+
+  def Done(self):
+    with open(self.json_test_results, "w") as f:
+      json.dump({
+        "interrupted": False,
+        "num_failures_by_type": self.summary,
+        "path_delimiter": "/",
+        "seconds_since_epoch": self.seconds_since_epoch,
+        "tests": self.results,
+        "version": 3,
+      }, f)
+
+  def HasRun(self, test, has_unexpected_output):
+    key = "/".join(
+        sorted(flag.lstrip("-")
+               for flag in self.runner.context.extra_flags + test.flags) +
+        ["test", test.GetLabel()],
+    )
+    outcome = test.suite.GetOutcome(test)
+    assert outcome in ["PASS", "FAIL", "CRASH", "TIMEOUT"]
+    if test.run == 1:
+      # First run of this test.
+      expected_outcomes = ([
+        expected
+        for expected in (test.outcomes or ["PASS"])
+        if expected in ["PASS", "FAIL", "CRASH", "TIMEOUT"]
+      ] or ["PASS"])
+      self.results[key] = {
+        "actual": outcome,
+        "expected": " ".join(expected_outcomes),
+        "times": [test.duration],
+      }
+      self.summary[outcome] = self.summary[outcome] + 1
+    else:
+      # This is a rerun and a previous result exists.
+      result = self.results[key]
+      result["actual"] = "%s %s" % (result["actual"], outcome)
+      result["times"].append(test.duration)
 
 
 PROGRESS_INDICATORS = {

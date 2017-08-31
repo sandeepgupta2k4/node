@@ -31,8 +31,16 @@ class InstructionOperandConverter {
     return ToRegister(instr_->InputAt(index));
   }
 
+  FloatRegister InputFloatRegister(size_t index) {
+    return ToFloatRegister(instr_->InputAt(index));
+  }
+
   DoubleRegister InputDoubleRegister(size_t index) {
     return ToDoubleRegister(instr_->InputAt(index));
+  }
+
+  Simd128Register InputSimd128Register(size_t index) {
+    return ToSimd128Register(instr_->InputAt(index));
   }
 
   double InputDouble(size_t index) { return ToDouble(instr_->InputAt(index)); }
@@ -41,6 +49,10 @@ class InstructionOperandConverter {
 
   int32_t InputInt32(size_t index) {
     return ToConstant(instr_->InputAt(index)).ToInt32();
+  }
+
+  uint32_t InputUint32(size_t index) {
+    return bit_cast<uint32_t>(InputInt32(index));
   }
 
   int64_t InputInt64(size_t index) {
@@ -53,6 +65,14 @@ class InstructionOperandConverter {
 
   int16_t InputInt16(size_t index) {
     return static_cast<int16_t>(InputInt32(index));
+  }
+
+  uint8_t InputInt3(size_t index) {
+    return static_cast<uint8_t>(InputInt32(index) & 0x7);
+  }
+
+  uint8_t InputInt4(size_t index) {
+    return static_cast<uint8_t>(InputInt32(index) & 0xF);
   }
 
   uint8_t InputInt5(size_t index) {
@@ -85,8 +105,16 @@ class InstructionOperandConverter {
     return ToRegister(instr_->TempAt(index));
   }
 
+  FloatRegister OutputFloatRegister() {
+    return ToFloatRegister(instr_->Output());
+  }
+
   DoubleRegister OutputDoubleRegister() {
     return ToDoubleRegister(instr_->Output());
+  }
+
+  Simd128Register OutputSimd128Register() {
+    return ToSimd128Register(instr_->Output());
   }
 
   // -- Conversions for operands -----------------------------------------------
@@ -103,8 +131,16 @@ class InstructionOperandConverter {
     return LocationOperand::cast(op)->GetRegister();
   }
 
+  FloatRegister ToFloatRegister(InstructionOperand* op) {
+    return LocationOperand::cast(op)->GetFloatRegister();
+  }
+
   DoubleRegister ToDoubleRegister(InstructionOperand* op) {
     return LocationOperand::cast(op)->GetDoubleRegister();
+  }
+
+  Simd128Register ToSimd128Register(InstructionOperand* op) {
+    return LocationOperand::cast(op)->GetSimd128Register();
   }
 
   Constant ToConstant(InstructionOperand* op) {
@@ -127,7 +163,7 @@ class InstructionOperandConverter {
     return ToConstant(op).ToHeapObject();
   }
 
-  Frame* frame() const { return gen_->frame(); }
+  const Frame* frame() const { return gen_->frame(); }
   FrameAccessState* frame_access_state() const {
     return gen_->frame_access_state();
   }
@@ -142,15 +178,17 @@ class InstructionOperandConverter {
 // Eager deoptimization exit.
 class DeoptimizationExit : public ZoneObject {
  public:
-  explicit DeoptimizationExit(int deoptimization_id)
-      : deoptimization_id_(deoptimization_id) {}
+  explicit DeoptimizationExit(int deoptimization_id, SourcePosition pos)
+      : deoptimization_id_(deoptimization_id), pos_(pos) {}
 
   int deoptimization_id() const { return deoptimization_id_; }
   Label* label() { return &label_; }
+  SourcePosition pos() const { return pos_; }
 
  private:
   int const deoptimization_id_;
   Label label_;
+  SourcePosition const pos_;
 };
 
 // Generator for out-of-line code that is emitted after the main code is done.
@@ -163,7 +201,7 @@ class OutOfLineCode : public ZoneObject {
 
   Label* entry() { return &entry_; }
   Label* exit() { return &exit_; }
-  Frame* frame() const { return frame_; }
+  const Frame* frame() const { return frame_; }
   Isolate* isolate() const { return masm()->isolate(); }
   MacroAssembler* masm() const { return masm_; }
   OutOfLineCode* next() const { return next_; }
@@ -171,21 +209,10 @@ class OutOfLineCode : public ZoneObject {
  private:
   Label entry_;
   Label exit_;
-  Frame* const frame_;
+  const Frame* const frame_;
   MacroAssembler* const masm_;
   OutOfLineCode* const next_;
 };
-
-
-// TODO(dcarney): generify this on bleeding_edge and replace this call
-// when merged.
-static inline void FinishCode(MacroAssembler* masm) {
-#if V8_TARGET_ARCH_ARM64 || V8_TARGET_ARCH_ARM
-  masm->CheckConstPool(true, false);
-#elif V8_TARGET_ARCH_IA32 || V8_TARGET_ARCH_X64
-  masm->ud2();
-#endif
-}
 
 }  // namespace compiler
 }  // namespace internal

@@ -8,14 +8,16 @@ load("test/mjsunit/wasm/wasm-constants.js");
 load("test/mjsunit/wasm/wasm-module-builder.js");
 
 (function testExportedMain() {
-  var kReturnValue = 88;
+  print("TestExportedMain...");
+  var kReturnValue = 44;
   var builder = new WasmModuleBuilder();
 
-  builder.addFunction("main", [kAstI32])
+  builder.addFunction("main", kSig_i_v)
     .addBody([
-      kExprReturn,
-      kExprI8Const,
-      kReturnValue])
+      kExprI32Const,
+      kReturnValue,
+      kExprReturn
+    ])
     .exportFunc();
 
   var module = builder.instantiate();
@@ -27,15 +29,17 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 })();
 
 (function testExportedTwice() {
-  var kReturnValue = 99;
+  print("TestExportedTwice...");
+  var kReturnValue = 45;
 
   var builder = new WasmModuleBuilder();
 
-  builder.addFunction("main", [kAstI32])
+  builder.addFunction("main", kSig_i_v)
     .addBody([
-      kExprReturn,
-      kExprI8Const,
-      kReturnValue])
+      kExprI32Const,
+      kReturnValue,
+      kExprReturn
+    ])
     .exportAs("blah")
     .exportAs("foo");
 
@@ -47,4 +51,126 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 
   assertEquals(kReturnValue, module.exports.foo());
   assertEquals(kReturnValue, module.exports.blah());
+  assertSame(module.exports.blah, module.exports.foo);
+})();
+
+(function testEmptyName() {
+  print("TestEmptyName...");
+  var kReturnValue = 46;
+
+  var builder = new WasmModuleBuilder();
+
+  builder.addFunction("main", kSig_i_v)
+    .addBody([
+      kExprI32Const,
+      kReturnValue,
+      kExprReturn
+    ])
+    .exportAs("");
+
+  var module = builder.instantiate();
+
+  assertEquals("object", typeof module.exports);
+  assertEquals("function", typeof module.exports[""]);
+
+  assertEquals(kReturnValue, module.exports[""]());
+})();
+
+(function testNumericName() {
+  print("TestNumericName...");
+  var kReturnValue = 47;
+
+  var builder = new WasmModuleBuilder();
+
+  builder.addFunction("main", kSig_i_v)
+    .addBody([
+      kExprI32Const,
+      kReturnValue,
+      kExprReturn
+    ])
+    .exportAs("0");
+
+  var module = builder.instantiate();
+
+  assertEquals("object", typeof module.exports);
+  assertEquals("function", typeof module.exports["0"]);
+
+  assertEquals(kReturnValue, module.exports["0"]());
+})();
+
+(function testExportNameClash() {
+  print("TestExportNameClash...");
+  var builder = new WasmModuleBuilder();
+
+  builder.addFunction("one",   kSig_v_v).addBody([kExprNop]).exportAs("main");
+  builder.addFunction("two",   kSig_v_v).addBody([kExprNop]).exportAs("other");
+  builder.addFunction("three", kSig_v_v).addBody([kExprNop]).exportAs("main");
+
+  try {
+    builder.instantiate();
+    assertUnreachable("should have thrown an exception");
+  } catch (e) {
+    assertContains("Duplicate export", e.toString());
+  }
+})();
+
+
+(function testExportMultipleIdentity() {
+  print("TestExportMultipleIdentity...");
+  var builder = new WasmModuleBuilder();
+
+  var f = builder.addFunction("one", kSig_v_v).addBody([kExprNop])
+    .exportAs("a")
+    .exportAs("b")
+    .exportAs("c");
+
+  let instance = builder.instantiate();
+  let e = instance.exports;
+  assertEquals("function", typeof e.a);
+  assertEquals("function", typeof e.b);
+  assertEquals("function", typeof e.c);
+  assertSame(e.a, e.b);
+  assertSame(e.a, e.c);
+  assertEquals(String(f.index), e.a.name);
+})();
+
+
+(function testReexportJSMultipleIdentity() {
+  print("TestReexportMultipleIdentity...");
+  var builder = new WasmModuleBuilder();
+
+  function js() {}
+
+  var a = builder.addImport("m", "a", kSig_v_v);
+  builder.addExport("f", a);
+  builder.addExport("g", a);
+
+  let instance = builder.instantiate({m: {a: js}});
+  let e = instance.exports;
+  assertEquals("function", typeof e.f);
+  assertEquals("function", typeof e.g);
+  assertFalse(e.f == js);
+  assertFalse(e.g == js);
+  assertTrue(e.f == e.g);
+})();
+
+
+(function testReexportJSMultiple() {
+  print("TestReexportMultiple...");
+  var builder = new WasmModuleBuilder();
+
+  function js() {}
+
+  var a = builder.addImport("q", "a", kSig_v_v);
+  var b = builder.addImport("q", "b", kSig_v_v);
+  builder.addExport("f", a);
+  builder.addExport("g", b);
+
+  let instance = builder.instantiate({q: {a: js, b: js}});
+  let e = instance.exports;
+  assertEquals("function", typeof e.f);
+  assertEquals("function", typeof e.g);
+  assertFalse(e.f == js);
+  assertFalse(e.g == js);
+  assertFalse(e.f == e.g);
 })();

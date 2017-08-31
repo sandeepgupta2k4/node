@@ -18,16 +18,6 @@ function instantiate(sig, body) {
   return builder.instantiate();
 }
 
-function assertFails(sig, body) {
-  try {
-    var module = instantiate(sig, body);
-    print("expected failure, but passes");
-    assertFalse(true);
-  } catch (expected) {
-    print("ok: " + expected);
-  }
-}
-
 function assertVerifies(sig, body) {
   var module = instantiate(sig, body);
   assertFalse(module === undefined);
@@ -37,24 +27,27 @@ function assertVerifies(sig, body) {
   return module;
 }
 
-assertVerifies([kAstStmt], [kExprNop]);
-assertVerifies([kAstI32], [kExprI8Const, 0]);
+assertVerifies(kSig_v_v, [kExprNop]);
 
 // Arguments aren't allow to start functions.
-assertFails([kAstI32, kAstI32], [kExprGetLocal, 0]);
-assertFails([kAstI32, kAstI32, kAstF32], [kExprGetLocal, 0]);
-assertFails([kAstI32, kAstI32, kAstF32, kAstF64], [kExprGetLocal, 0]);
+assertThrows(() => {instantiate(kSig_i_i, [kExprGetLocal, 0]);});
+assertThrows(() => {instantiate(kSig_i_ii, [kExprGetLocal, 0]);});
+assertThrows(() => {instantiate(kSig_i_dd, [kExprGetLocal, 0]);});
+assertThrows(() => {instantiate(kSig_i_v, [kExprI32Const, 0]);});
 
 (function testInvalidIndex() {
   print("testInvalidIndex");
   var builder = new WasmModuleBuilder();
 
-  var func = builder.addFunction("", [kAstStmt])
+  var func = builder.addFunction("", kSig_v_v)
     .addBody([kExprNop]);
 
   builder.addStart(func.index + 1);
 
-  assertThrows(builder.instantiate);
+  assertThrows(
+      () => builder.instantiate(), WebAssembly.CompileError,
+      'WebAssembly.Module(): Wasm decoding failed: ' +
+          'function index 1 out of bounds (1 entry) @+20');
 })();
 
 
@@ -62,29 +55,49 @@ assertFails([kAstI32, kAstI32, kAstF32, kAstF64], [kExprGetLocal, 0]);
   print("testTwoStartFuncs");
   var builder = new WasmModuleBuilder();
 
-  var func = builder.addFunction("", [kAstStmt])
+  var func = builder.addFunction("", kSig_v_v)
     .addBody([kExprNop]);
 
-  builder.addExplicitSection([kDeclStartFunction, 0]);
-  builder.addExplicitSection([kDeclStartFunction, 0]);
+  builder.addExplicitSection([kStartSectionCode, 0]);
+  builder.addExplicitSection([kStartSectionCode, 0]);
 
-  assertThrows(builder.instantiate);
+  assertThrows(
+      () => builder.instantiate(), WebAssembly.CompileError,
+      'WebAssembly.Module(): Wasm decoding failed: ' +
+          'unexpected section: Start @+27');
 })();
 
 
-(function testRun() {
-  print("testRun");
+(function testRun1() {
+  print("testRun1");
   var builder = new WasmModuleBuilder();
 
   builder.addMemory(12, 12, true);
 
-  var func = builder.addFunction("", [kAstStmt])
-    .addBody([kExprI32StoreMem, 0, 0, kExprI8Const, 0, kExprI8Const, 77]);
+  var func = builder.addFunction("", kSig_v_v)
+    .addBody([kExprI32Const, 0, kExprI32Const, 55, kExprI32StoreMem, 0, 0]);
 
   builder.addStart(func.index);
 
   var module = builder.instantiate();
-  var memory = module.exports.memory;
+  var memory = module.exports.memory.buffer;
+  var view = new Int8Array(memory);
+  assertEquals(55, view[0]);
+})();
+
+(function testRun2() {
+  print("testRun2");
+  var builder = new WasmModuleBuilder();
+
+  builder.addMemory(12, 12, true);
+
+  var func = builder.addFunction("", kSig_v_v)
+    .addBody([kExprI32Const, 0, kExprI32Const, 22, kExprI32Const, 55, kExprI32Add, kExprI32StoreMem, 0, 0]);
+
+  builder.addStart(func.index);
+
+  var module = builder.instantiate();
+  var memory = module.exports.memory.buffer;
   var view = new Int8Array(memory);
   assertEquals(77, view[0]);
 })();
@@ -92,17 +105,17 @@ assertFails([kAstI32, kAstI32, kAstF32, kAstF64], [kExprGetLocal, 0]);
 (function testStartFFI() {
   print("testStartFFI");
   var ranned = false;
-  var ffi = { foo : function() {
+  var ffi = {gak: {foo : function() {
     print("we ranned at stert!");
     ranned = true;
-  }};
+  }}};
 
   var builder = new WasmModuleBuilder();
-  var sig_index = builder.addSignature([kAstStmt]);
+  var sig_index = builder.addType(kSig_v_v);
 
-  builder.addImport("foo", sig_index);
+  builder.addImport("gak", "foo", sig_index);
   var func = builder.addFunction("", sig_index)
-    .addBody([kExprCallImport, 0]);
+    .addBody([kExprCallFunction, 0]);
 
   builder.addStart(func.index);
 

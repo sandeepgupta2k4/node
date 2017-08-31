@@ -12,28 +12,41 @@ var kMemSize = 65536;
 function genModule(memory) {
   var builder = new WasmModuleBuilder();
 
-  builder.addMemory(1, 1, true);
-  builder.addFunction("main", [kAstI32, kAstI32])
+  builder.addImportedMemory("", "memory", 1);
+  builder.exportMemoryAs("memory");
+  builder.addFunction("main", kSig_i_i)
     .addBody([
-      kExprBlock,2,
-        kExprLoop,1,
-          kExprIf,
-            kExprGetLocal,0,
-            kExprBr, 0,
-              kExprIfElse,
-                kExprI32LoadMem,0,0,kExprGetLocal,0,
-                kExprBr,2, kExprI8Const, 255,
-                kExprSetLocal,0,
-                  kExprI32Sub,kExprGetLocal,0,kExprI8Const,4,
-        kExprI8Const,0])
+      // main body: while(i) { if(mem[i]) return -1; i -= 4; } return 0;
+      // TODO(titzer): this manual bytecode has a copy of test-run-wasm.cc
+      /**/ kExprLoop, kWasmStmt,           // --
+      /*  */ kExprGetLocal, 0,             // --
+      /*  */ kExprIf, kWasmStmt,           // --
+      /*    */ kExprGetLocal, 0,           // --
+      /*    */ kExprI32LoadMem, 0, 0,      // --
+      /*    */ kExprIf, kWasmStmt,         // --
+      /*      */ kExprI32Const, 127,       // --
+      /*      */ kExprReturn,              // --
+      /*      */ kExprEnd,                 // --
+      /*    */ kExprGetLocal, 0,           // --
+      /*    */ kExprI32Const, 4,           // --
+      /*    */ kExprI32Sub,                // --
+      /*    */ kExprSetLocal, 0,           // --
+      /*    */ kExprBr, 1,                 // --
+      /*    */ kExprEnd,                   // --
+      /*  */ kExprEnd,                     // --
+      /**/ kExprI32Const, 0                // --
+    ])
     .exportFunc();
-
-  return builder.instantiate(null, memory);
+  var module = builder.instantiate({"": {memory:memory}});
+  assertTrue(module.exports.memory instanceof WebAssembly.Memory);
+  if (memory != null) assertEquals(memory.buffer, module.exports.memory.buffer);
+  return module;
 }
 
 function testPokeMemory() {
-  var module = genModule(null);
-  var buffer = module.exports.memory;
+  print("testPokeMemory");
+  var module = genModule(new WebAssembly.Memory({initial: 1}));
+  var buffer = module.exports.memory.buffer;
   var main = module.exports.main;
   assertEquals(kMemSize, buffer.byteLength);
 
@@ -58,9 +71,13 @@ function testPokeMemory() {
 
 testPokeMemory();
 
+function genAndGetMain(buffer) {
+  return genModule(buffer).exports.main;  // to prevent intermediates living
+}
+
 function testSurvivalAcrossGc() {
-  var checker = genModule(null).exports.main;
-  for (var i = 0; i < 5; i++) {
+  var checker = genAndGetMain(new WebAssembly.Memory({initial: 1}));
+  for (var i = 0; i < 3; i++) {
     print("gc run ", i);
     assertEquals(0, checker(kMemSize - 4));
     gc();
@@ -74,12 +91,13 @@ testSurvivalAcrossGc();
 
 
 function testPokeOuterMemory() {
-  var buffer = new ArrayBuffer(kMemSize);
+  print("testPokeOuterMemory");
+  var buffer = new WebAssembly.Memory({initial: kMemSize / kPageSize});
   var module = genModule(buffer);
   var main = module.exports.main;
-  assertEquals(kMemSize, buffer.byteLength);
+  assertEquals(kMemSize, buffer.buffer.byteLength);
 
-  var array = new Int8Array(buffer);
+  var array = new Int8Array(buffer.buffer);
   assertEquals(kMemSize, array.length);
 
   for (var i = 0; i < kMemSize; i++) {
@@ -101,9 +119,9 @@ function testPokeOuterMemory() {
 testPokeOuterMemory();
 
 function testOuterMemorySurvivalAcrossGc() {
-  var buffer = new ArrayBuffer(kMemSize);
-  var checker = genModule(buffer).exports.main;
-  for (var i = 0; i < 5; i++) {
+  var buffer = new WebAssembly.Memory({initial: kMemSize / kPageSize});
+  var checker = genAndGetMain(buffer);
+  for (var i = 0; i < 3; i++) {
     print("gc run ", i);
     assertEquals(0, checker(kMemSize - 4));
     gc();
@@ -120,14 +138,18 @@ function testOOBThrows() {
   var builder = new WasmModuleBuilder();
 
   builder.addMemory(1, 1, true);
-  builder.addFunction("geti", [kAstI32, kAstI32, kAstI32])
+  builder.addFunction("geti", kSig_i_ii)
     .addBody([
-      kExprI32StoreMem, 0, 0, kExprGetLocal, 0, kExprI32LoadMem, 0, 0, kExprGetLocal, 1
+      kExprGetLocal, 0,
+      kExprGetLocal, 1,
+      kExprI32LoadMem, 0, 0,
+      kExprI32StoreMem, 0, 0,
+      kExprGetLocal, 1,
+      kExprI32LoadMem, 0, 0,
     ])
     .exportFunc();
 
   var module = builder.instantiate();
-
   var offset;
 
   function read() { return module.exports.geti(0, offset); }

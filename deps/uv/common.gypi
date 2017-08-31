@@ -11,7 +11,7 @@
     'configurations': {
       'Debug': {
         'defines': [ 'DEBUG', '_DEBUG' ],
-        'cflags': [ '-g', '-O0', '-fwrapv' ],
+        'cflags': [ '-g' ],
         'msvs_settings': {
           'VCCLCompilerTool': {
             'target_conditions': [
@@ -35,6 +35,9 @@
           'OTHER_CFLAGS': [ '-Wno-strict-aliasing' ],
         },
         'conditions': [
+          ['OS != "os390"', {
+            'cflags': [ '-O0', '-fwrapv' ]
+          }],
           ['OS == "android"', {
             'cflags': [ '-fPIE' ],
             'ldflags': [ '-fPIE', '-pie' ]
@@ -46,9 +49,6 @@
         'cflags': [
           '-O3',
           '-fstrict-aliasing',
-          '-fomit-frame-pointer',
-          '-fdata-sections',
-          '-ffunction-sections',
         ],
         'msvs_settings': {
           'VCCLCompilerTool': {
@@ -79,6 +79,15 @@
             'LinkIncremental': 1, # disable incremental linking
           },
         },
+        'conditions': [
+          ['OS != "os390"', {
+            'cflags': [
+              '-fomit-frame-pointer',
+              '-fdata-sections',
+              '-ffunction-sections',
+            ],
+          }],
+        ]
       }
     },
     'msvs_settings': {
@@ -151,7 +160,7 @@
             'cflags': [ '-pthreads' ],
             'ldflags': [ '-pthreads' ],
           }],
-          [ 'OS not in "solaris android"', {
+          [ 'OS not in "solaris android os390"', {
             'cflags': [ '-pthread' ],
             'ldflags': [ '-pthread' ],
           }],
@@ -177,6 +186,7 @@
             '-Wendif-labels',
             '-W',
             '-Wno-unused-parameter',
+            '-Wstrict-prototypes',
           ],
         },
         'conditions': [

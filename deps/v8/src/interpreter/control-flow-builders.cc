@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "src/interpreter/control-flow-builders.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -10,118 +11,89 @@ namespace interpreter {
 
 
 BreakableControlFlowBuilder::~BreakableControlFlowBuilder() {
-  DCHECK(break_sites_.empty());
+  DCHECK(break_labels_.empty() || break_labels_.is_bound());
 }
 
-
-void BreakableControlFlowBuilder::SetBreakTarget(const BytecodeLabel& target) {
-  BindLabels(target, &break_sites_);
+void BreakableControlFlowBuilder::BindBreakTarget() {
+  break_labels_.Bind(builder());
 }
 
-
-void BreakableControlFlowBuilder::EmitJump(ZoneVector<BytecodeLabel>* sites) {
-  sites->push_back(BytecodeLabel());
-  builder()->Jump(&sites->back());
+void BreakableControlFlowBuilder::EmitJump(BytecodeLabels* sites) {
+  builder()->Jump(sites->New());
 }
-
 
 void BreakableControlFlowBuilder::EmitJumpIfTrue(
-    ZoneVector<BytecodeLabel>* sites) {
-  sites->push_back(BytecodeLabel());
-  builder()->JumpIfTrue(&sites->back());
+    BytecodeArrayBuilder::ToBooleanMode mode, BytecodeLabels* sites) {
+  builder()->JumpIfTrue(mode, sites->New());
 }
-
 
 void BreakableControlFlowBuilder::EmitJumpIfFalse(
-    ZoneVector<BytecodeLabel>* sites) {
-  sites->push_back(BytecodeLabel());
-  builder()->JumpIfFalse(&sites->back());
+    BytecodeArrayBuilder::ToBooleanMode mode, BytecodeLabels* sites) {
+  builder()->JumpIfFalse(mode, sites->New());
 }
 
-
-void BreakableControlFlowBuilder::EmitJumpIfUndefined(
-    ZoneVector<BytecodeLabel>* sites) {
-  sites->push_back(BytecodeLabel());
-  builder()->JumpIfUndefined(&sites->back());
+void BreakableControlFlowBuilder::EmitJumpIfUndefined(BytecodeLabels* sites) {
+  builder()->JumpIfUndefined(sites->New());
 }
 
-
-void BreakableControlFlowBuilder::EmitJumpIfNull(
-    ZoneVector<BytecodeLabel>* sites) {
-  sites->push_back(BytecodeLabel());
-  builder()->JumpIfNull(&sites->back());
+void BreakableControlFlowBuilder::EmitJumpIfNull(BytecodeLabels* sites) {
+  builder()->JumpIfNull(sites->New());
 }
-
-
-void BreakableControlFlowBuilder::EmitJump(ZoneVector<BytecodeLabel>* sites,
-                                           int index) {
-  builder()->Jump(&sites->at(index));
-}
-
-
-void BreakableControlFlowBuilder::EmitJumpIfTrue(
-    ZoneVector<BytecodeLabel>* sites, int index) {
-  builder()->JumpIfTrue(&sites->at(index));
-}
-
-
-void BreakableControlFlowBuilder::EmitJumpIfFalse(
-    ZoneVector<BytecodeLabel>* sites, int index) {
-  builder()->JumpIfFalse(&sites->at(index));
-}
-
-
-void BreakableControlFlowBuilder::BindLabels(const BytecodeLabel& target,
-                                             ZoneVector<BytecodeLabel>* sites) {
-  for (size_t i = 0; i < sites->size(); i++) {
-    BytecodeLabel& site = sites->at(i);
-    builder()->Bind(target, &site);
-  }
-  sites->clear();
-}
-
 
 void BlockBuilder::EndBlock() {
   builder()->Bind(&block_end_);
-  SetBreakTarget(block_end_);
+  BindBreakTarget();
 }
 
-
-LoopBuilder::~LoopBuilder() { DCHECK(continue_sites_.empty()); }
-
+LoopBuilder::~LoopBuilder() {
+  DCHECK(continue_labels_.empty() || continue_labels_.is_bound());
+  BindBreakTarget();
+  // Restore the parent jump table.
+  if (generator_jump_table_location_ != nullptr) {
+    *generator_jump_table_location_ = parent_generator_jump_table_;
+  }
+}
 
 void LoopBuilder::LoopHeader() {
   // Jumps from before the loop header into the loop violate ordering
   // requirements of bytecode basic blocks. The only entry into a loop
   // must be the loop header. Surely breaks is okay? Not if nested
   // and misplaced between the headers.
-  DCHECK(break_sites_.empty() && continue_sites_.empty());
+  DCHECK(break_labels_.empty() && continue_labels_.empty());
   builder()->Bind(&loop_header_);
 }
 
+void LoopBuilder::LoopHeaderInGenerator(
+    BytecodeJumpTable** generator_jump_table, int first_resume_id,
+    int resume_count) {
+  // Bind all the resume points that are inside the loop to be at the loop
+  // header.
+  for (int id = first_resume_id; id < first_resume_id + resume_count; ++id) {
+    builder()->Bind(*generator_jump_table, id);
+  }
 
-void LoopBuilder::EndLoop() {
+  // Create the loop header.
+  LoopHeader();
+
+  // Create a new jump table for after the loop header for only these
+  // resume points.
+  generator_jump_table_location_ = generator_jump_table;
+  parent_generator_jump_table_ = *generator_jump_table;
+  *generator_jump_table =
+      builder()->AllocateJumpTable(resume_count, first_resume_id);
+}
+
+void LoopBuilder::JumpToHeader(int loop_depth) {
+  // Pass the proper loop nesting level to the backwards branch, to trigger
+  // on-stack replacement when armed for the given loop nesting depth.
+  int level = Min(loop_depth, AbstractCode::kMaxLoopNestingMarker - 1);
   // Loop must have closed form, i.e. all loop elements are within the loop,
   // the loop header precedes the body and next elements in the loop.
   DCHECK(loop_header_.is_bound());
-  builder()->Bind(&loop_end_);
-  SetBreakTarget(loop_end_);
-  if (next_.is_bound()) {
-    DCHECK(!condition_.is_bound() || next_.offset() >= condition_.offset());
-    SetContinueTarget(next_);
-  } else {
-    DCHECK(condition_.is_bound());
-    DCHECK_GE(condition_.offset(), loop_header_.offset());
-    DCHECK_LE(condition_.offset(), loop_end_.offset());
-    SetContinueTarget(condition_);
-  }
+  builder()->JumpLoop(&loop_header_, level);
 }
 
-
-void LoopBuilder::SetContinueTarget(const BytecodeLabel& target) {
-  BindLabels(target, &continue_sites_);
-}
-
+void LoopBuilder::BindContinueTarget() { continue_labels_.Bind(builder()); }
 
 SwitchBuilder::~SwitchBuilder() {
 #ifdef DEBUG
@@ -147,7 +119,7 @@ void TryCatchBuilder::EndTry() {
   builder()->MarkTryEnd(handler_id_);
   builder()->Jump(&exit_);
   builder()->Bind(&handler_);
-  builder()->MarkHandler(handler_id_, true);
+  builder()->MarkHandler(handler_id_, catch_prediction_);
 }
 
 
@@ -160,8 +132,7 @@ void TryFinallyBuilder::BeginTry(Register context) {
 
 
 void TryFinallyBuilder::LeaveTry() {
-  finalization_sites_.push_back(BytecodeLabel());
-  builder()->Jump(&finalization_sites_.back());
+  builder()->Jump(finalization_sites_.New());
 }
 
 
@@ -172,17 +143,10 @@ void TryFinallyBuilder::EndTry() {
 
 void TryFinallyBuilder::BeginHandler() {
   builder()->Bind(&handler_);
-  builder()->MarkHandler(handler_id_, will_catch_);
+  builder()->MarkHandler(handler_id_, catch_prediction_);
 }
 
-
-void TryFinallyBuilder::BeginFinally() {
-  for (size_t i = 0; i < finalization_sites_.size(); i++) {
-    BytecodeLabel& site = finalization_sites_.at(i);
-    builder()->Bind(&site);
-  }
-}
-
+void TryFinallyBuilder::BeginFinally() { finalization_sites_.Bind(builder()); }
 
 void TryFinallyBuilder::EndFinally() {
   // Nothing to be done here.

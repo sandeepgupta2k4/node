@@ -15,6 +15,7 @@ var uidNumber = require('uid-number')
 var umask = require('./umask')
 var usage = require('./usage')
 var output = require('./output.js')
+var which = require('which')
 
 // windows calls it's path 'Path' usually, but this is not guaranteed.
 if (process.platform === 'win32') {
@@ -54,6 +55,12 @@ function lifecycle (pkg, stage, wd, unsafe, failOk, cb) {
     log.info('lifecycle', logid(pkg, stage), 'ignored because ignore-scripts is set to true', pkg._id)
     pkg.scripts = {}
   }
+  if (stage === 'prepublish' && npm.config.get('ignore-prepublish')) {
+    log.info('lifecycle', logid(pkg, stage), 'ignored because ignore-prepublish is set to true', pkg._id)
+    delete pkg.scripts.prepublish
+  }
+
+  if (!pkg.scripts[stage]) return cb()
 
   validWd(wd || path.resolve(npm.dir, pkg.name), function (er, wd) {
     if (er) return cb(er)
@@ -88,7 +95,7 @@ function _incorrectWorkingDirectory (wd, pkg) {
 
 function lifecycle_ (pkg, stage, wd, env, unsafe, failOk, cb) {
   var pathArr = []
-  var p = wd.split('node_modules')
+  var p = wd.split(/[\\\/]node_modules[\\\/]/)
   var acc = path.resolve(p.shift())
 
   p.forEach(function (pp) {
@@ -101,8 +108,10 @@ function lifecycle_ (pkg, stage, wd, env, unsafe, failOk, cb) {
   // the bundled one will be used for installing things.
   pathArr.unshift(path.join(__dirname, '..', '..', 'bin', 'node-gyp-bin'))
 
-  // prefer current node interpreter in child scripts
-  pathArr.push(path.dirname(process.execPath))
+  if (shouldPrependCurrentNodeDirToPATH()) {
+    // prefer current node interpreter in child scripts
+    pathArr.push(path.dirname(process.execPath))
+  }
 
   if (env[PATH]) pathArr.push(env[PATH])
   env[PATH] = pathArr.join(process.platform === 'win32' ? ';' : ':')
@@ -136,6 +145,40 @@ function lifecycle_ (pkg, stage, wd, env, unsafe, failOk, cb) {
     ],
     done
   )
+}
+
+function shouldPrependCurrentNodeDirToPATH () {
+  var cfgsetting = npm.config.get('scripts-prepend-node-path')
+  if (cfgsetting === false) return false
+  if (cfgsetting === true) return true
+
+  var isDifferentNodeInPath
+
+  var isWindows = process.platform === 'win32'
+  var foundExecPath
+  try {
+    foundExecPath = which.sync(path.basename(process.execPath), {pathExt: isWindows ? ';' : ':'})
+    // Apply `fs.realpath()` here to avoid false positives when `node` is a symlinked executable.
+    isDifferentNodeInPath = fs.realpathSync(process.execPath).toUpperCase() !==
+        fs.realpathSync(foundExecPath).toUpperCase()
+  } catch (e) {
+    isDifferentNodeInPath = true
+  }
+
+  if (cfgsetting === 'warn-only') {
+    if (isDifferentNodeInPath && !shouldPrependCurrentNodeDirToPATH.hasWarned) {
+      if (foundExecPath) {
+        log.warn('lifecycle', 'The node binary used for scripts is', foundExecPath, 'but npm is using', process.execPath, 'itself. Use the `--scripts-prepend-node-path` option to include the path for the node binary npm was executed with.')
+      } else {
+        log.warn('lifecycle', 'npm is using', process.execPath, 'but there is no node binary in the current PATH. Use the `--scripts-prepend-node-path` option to include the path for the node binary npm was executed with.')
+      }
+      shouldPrependCurrentNodeDirToPATH.hasWarned = true
+    }
+
+    return false
+  }
+
+  return isDifferentNodeInPath
 }
 
 function validWd (d, cb) {
@@ -221,7 +264,11 @@ function runCmd_ (cmd, pkg, env, wd, stage, unsafe, uid, gid, cb_) {
   var sh = 'sh'
   var shFlag = '-c'
 
-  if (process.platform === 'win32') {
+  var customShell = npm.config.get('script-shell')
+
+  if (customShell) {
+    sh = customShell
+  } else if (process.platform === 'win32') {
     sh = process.env.comspec || 'cmd'
     shFlag = '/d /s /c'
     conf.windowsVerbatimArguments = true
@@ -240,10 +287,12 @@ function runCmd_ (cmd, pkg, env, wd, stage, unsafe, uid, gid, cb_) {
       process.kill(process.pid, signal)
     } else if (code) {
       var er = new Error('Exit status ' + code)
+      er.errno = code
     }
     procError(er)
   })
   process.once('SIGTERM', procKill)
+  process.once('SIGINT', procInterupt)
 
   function procError (er) {
     if (er) {
@@ -264,10 +313,19 @@ function runCmd_ (cmd, pkg, env, wd, stage, unsafe, uid, gid, cb_) {
       er.pkgname = pkg.name
     }
     process.removeListener('SIGTERM', procKill)
+    process.removeListener('SIGTERM', procInterupt)
+    process.removeListener('SIGINT', procKill)
     return cb(er)
   }
   function procKill () {
     proc.kill()
+  }
+  function procInterupt () {
+    proc.kill('SIGINT')
+    proc.on('exit', function () {
+      process.exit()
+    })
+    process.once('SIGINT', procKill)
   }
 }
 
@@ -294,9 +352,6 @@ function makeEnv (data, prefix, env) {
         env[i] = process.env[i]
       }
     }
-
-    // npat asks for tap output
-    if (npm.config.get('npat')) env.TAP = 1
 
     // express and others respect the NODE_ENV value.
     if (npm.config.get('production')) env.NODE_ENV = 'production'

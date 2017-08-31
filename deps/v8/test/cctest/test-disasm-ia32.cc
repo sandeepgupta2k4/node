@@ -29,11 +29,11 @@
 
 #include "src/v8.h"
 
+#include "src/code-factory.h"
 #include "src/debug/debug.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
 #include "src/ia32/frames-ia32.h"
-#include "src/ic/ic.h"
 #include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 
@@ -54,7 +54,6 @@ TEST(DisasmIa320) {
   v8::internal::byte buffer[4096];
   Assembler assm(isolate, buffer, sizeof buffer);
   DummyStaticFunction(NULL);  // just bloody use it (DELETE; debugging)
-
   // Short immediate instructions
   __ adc(eax, 12345678);
   __ add(eax, Immediate(12345678));
@@ -290,7 +289,7 @@ TEST(DisasmIa320) {
   __ bind(&L2);
   __ call(Operand(ebx, ecx, times_4, 10000));
   __ nop();
-  Handle<Code> ic(LoadIC::initialize_stub(isolate, NOT_INSIDE_TYPEOF));
+  Handle<Code> ic(CodeFactory::LoadIC(isolate).code());
   __ call(ic, RelocInfo::CODE_TARGET);
   __ nop();
   __ call(FUNCTION_ADDR(DummyStaticFunction), RelocInfo::RUNTIME_ENTRY);
@@ -298,9 +297,6 @@ TEST(DisasmIa320) {
 
   __ jmp(&L1);
   __ jmp(Operand(ebx, ecx, times_4, 10000));
-  ExternalReference after_break_target =
-      ExternalReference::debug_after_break_target_address(isolate);
-  __ jmp(Operand::StaticVariable(after_break_target));
   __ jmp(ic, RelocInfo::CODE_TARGET);
   __ nop();
 
@@ -390,6 +386,9 @@ TEST(DisasmIa320) {
   {
     // Move operation
     __ movaps(xmm0, xmm1);
+    __ movups(xmm0, xmm1);
+    __ movups(xmm0, Operand(edx, 4));
+    __ movups(Operand(edx, 4), xmm0);
     __ shufps(xmm0, xmm0, 0x0);
     __ cvtsd2ss(xmm0, xmm1);
     __ cvtsd2ss(xmm0, Operand(ebx, ecx, times_4, 10000));
@@ -425,6 +424,23 @@ TEST(DisasmIa320) {
     __ mulps(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ divps(xmm1, xmm0);
     __ divps(xmm1, Operand(ebx, ecx, times_4, 10000));
+    __ minps(xmm1, xmm0);
+    __ minps(xmm1, Operand(ebx, ecx, times_4, 10000));
+    __ maxps(xmm1, xmm0);
+    __ maxps(xmm1, Operand(ebx, ecx, times_4, 10000));
+    __ rcpps(xmm1, xmm0);
+    __ rcpps(xmm1, Operand(ebx, ecx, times_4, 10000));
+    __ rsqrtps(xmm1, xmm0);
+    __ rsqrtps(xmm1, Operand(ebx, ecx, times_4, 10000));
+
+    __ cmpeqps(xmm5, xmm1);
+    __ cmpeqps(xmm5, Operand(ebx, ecx, times_4, 10000));
+    __ cmpltps(xmm5, xmm1);
+    __ cmpltps(xmm5, Operand(ebx, ecx, times_4, 10000));
+    __ cmpleps(xmm5, xmm1);
+    __ cmpleps(xmm5, Operand(ebx, ecx, times_4, 10000));
+    __ cmpneqps(xmm5, xmm1);
+    __ cmpneqps(xmm5, Operand(ebx, ecx, times_4, 10000));
 
     __ ucomiss(xmm0, xmm1);
     __ ucomiss(xmm0, Operand(ebx, ecx, times_4, 10000));
@@ -434,6 +450,10 @@ TEST(DisasmIa320) {
     __ cvtsi2sd(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ cvtss2sd(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ cvtss2sd(xmm1, xmm0);
+    __ cvtdq2ps(xmm1, xmm0);
+    __ cvtdq2ps(xmm1, Operand(ebx, ecx, times_4, 10000));
+    __ cvttps2dq(xmm1, xmm0);
+    __ cvttps2dq(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ movsd(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ movsd(Operand(ebx, ecx, times_4, 10000), xmm1);
     // 128 bit move instructions.
@@ -458,16 +478,27 @@ TEST(DisasmIa320) {
     __ cmpltsd(xmm0, xmm1);
 
     __ andpd(xmm0, xmm1);
+
+    __ psllw(xmm0, 17);
+    __ pslld(xmm0, 17);
+    __ psrlw(xmm0, 17);
+    __ psrld(xmm0, 17);
+    __ psraw(xmm0, 17);
+    __ psrad(xmm0, 17);
     __ psllq(xmm0, 17);
     __ psllq(xmm0, xmm1);
     __ psrlq(xmm0, 17);
     __ psrlq(xmm0, xmm1);
-    __ por(xmm0, xmm1);
 
-    __ pcmpeqd(xmm1, xmm0);
+    __ pinsrw(xmm5, edx, 5);
+    __ pinsrw(xmm5, Operand(edx, 4), 5);
 
-    __ punpckldq(xmm1, xmm6);
-    __ punpckhdq(xmm7, xmm5);
+#define EMIT_SSE2_INSTR(instruction, notUsed1, notUsed2, notUsed3) \
+  __ instruction(xmm5, xmm1);                                      \
+  __ instruction(xmm5, Operand(edx, 4));
+
+    SSE2_INSTRUCTION_LIST(EMIT_SSE2_INSTR)
+#undef EMIT_SSE2_INSTR
   }
 
   // cmov.
@@ -496,6 +527,13 @@ TEST(DisasmIa320) {
       __ pextrd(eax, xmm0, 1);
       __ pinsrd(xmm1, eax, 0);
       __ extractps(eax, xmm1, 0);
+
+#define EMIT_SSE4_INSTR(instruction, notUsed1, notUsed2, notUsed3, notUsed4) \
+  __ instruction(xmm5, xmm1);                                                \
+  __ instruction(xmm5, Operand(edx, 4));
+
+      SSE4_INSTRUCTION_LIST(EMIT_SSE4_INSTR)
+#undef EMIT_SSE4_INSTR
     }
   }
 
@@ -533,11 +571,75 @@ TEST(DisasmIa320) {
       __ vandps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
       __ vxorps(xmm0, xmm1, xmm2);
       __ vxorps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vaddps(xmm0, xmm1, xmm2);
+      __ vaddps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vmulps(xmm0, xmm1, xmm2);
+      __ vmulps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vsubps(xmm0, xmm1, xmm2);
+      __ vsubps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vminps(xmm0, xmm1, xmm2);
+      __ vminps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vdivps(xmm0, xmm1, xmm2);
+      __ vdivps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vmaxps(xmm0, xmm1, xmm2);
+      __ vmaxps(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vrcpps(xmm1, xmm0);
+      __ vrcpps(xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vrsqrtps(xmm1, xmm0);
+      __ vrsqrtps(xmm1, Operand(ebx, ecx, times_4, 10000));
+
+      __ vcmpeqps(xmm5, xmm4, xmm1);
+      __ vcmpeqps(xmm5, xmm4, Operand(ebx, ecx, times_4, 10000));
+      __ vcmpltps(xmm5, xmm4, xmm1);
+      __ vcmpltps(xmm5, xmm4, Operand(ebx, ecx, times_4, 10000));
+      __ vcmpleps(xmm5, xmm4, xmm1);
+      __ vcmpleps(xmm5, xmm4, Operand(ebx, ecx, times_4, 10000));
+      __ vcmpneqps(xmm5, xmm4, xmm1);
+      __ vcmpneqps(xmm5, xmm4, Operand(ebx, ecx, times_4, 10000));
 
       __ vandpd(xmm0, xmm1, xmm2);
       __ vandpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
       __ vxorpd(xmm0, xmm1, xmm2);
       __ vxorpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vaddpd(xmm0, xmm1, xmm2);
+      __ vaddpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vmulpd(xmm0, xmm1, xmm2);
+      __ vmulpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vsubpd(xmm0, xmm1, xmm2);
+      __ vsubpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vminpd(xmm0, xmm1, xmm2);
+      __ vminpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vdivpd(xmm0, xmm1, xmm2);
+      __ vdivpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vmaxpd(xmm0, xmm1, xmm2);
+      __ vmaxpd(xmm0, xmm1, Operand(ebx, ecx, times_4, 10000));
+
+      __ vpsllw(xmm0, xmm7, 21);
+      __ vpslld(xmm0, xmm7, 21);
+      __ vpsrlw(xmm0, xmm7, 21);
+      __ vpsrld(xmm0, xmm7, 21);
+      __ vpsraw(xmm0, xmm7, 21);
+      __ vpsrad(xmm0, xmm7, 21);
+
+      __ vcvtdq2ps(xmm1, xmm0);
+      __ vcvtdq2ps(xmm1, Operand(ebx, ecx, times_4, 10000));
+      __ vcvttps2dq(xmm1, xmm0);
+      __ vcvttps2dq(xmm1, Operand(ebx, ecx, times_4, 10000));
+
+#define EMIT_SSE2_AVXINSTR(instruction, notUsed1, notUsed2, notUsed3) \
+  __ v##instruction(xmm7, xmm5, xmm1);                                \
+  __ v##instruction(xmm7, xmm5, Operand(edx, 4));
+
+      SSE2_INSTRUCTION_LIST(EMIT_SSE2_AVXINSTR)
+#undef EMIT_SSE2_AVXINSTR
+
+#define EMIT_SSE4_AVXINSTR(instruction, notUsed1, notUsed2, notUsed3, \
+                           notUsed4)                                  \
+  __ v##instruction(xmm7, xmm5, xmm1);                                \
+  __ v##instruction(xmm7, xmm5, Operand(edx, 4));
+
+      SSE4_INSTRUCTION_LIST(EMIT_SSE4_AVXINSTR)
+#undef EMIT_SSE4_AVXINSTR
     }
   }
 
@@ -665,10 +767,28 @@ TEST(DisasmIa320) {
 
   // xchg.
   {
+    __ xchg_b(eax, Operand(eax, 8));
+    __ xchg_w(eax, Operand(ebx, 8));
     __ xchg(eax, eax);
     __ xchg(eax, ebx);
     __ xchg(ebx, ebx);
     __ xchg(ebx, Operand(esp, 12));
+  }
+
+  // cmpxchg.
+  {
+    __ cmpxchg_b(Operand(esp, 12), eax);
+    __ cmpxchg_w(Operand(ebx, ecx, times_4, 10000), eax);
+    __ cmpxchg(Operand(ebx, ecx, times_4, 10000), eax);
+  }
+
+  // lock prefix.
+  {
+    __ lock();
+    __ cmpxchg(Operand(esp, 12), ebx);
+
+    __ lock();
+    __ xchg_w(eax, Operand(ecx, 8));
   }
 
   // Nop instructions

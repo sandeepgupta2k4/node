@@ -41,8 +41,7 @@ void GCIdleTimeAction::Print() {
 void GCIdleTimeHeapState::Print() {
   PrintF("contexts_disposed=%d ", contexts_disposed);
   PrintF("contexts_disposal_rate=%f ", contexts_disposal_rate);
-  PrintF("size_of_objects=%" V8_SIZET_PREFIX V8_PTR_PREFIX "d ",
-         size_of_objects);
+  PrintF("size_of_objects=%" PRIuS " ", size_of_objects);
   PrintF("incremental_marking_stopped=%d ", incremental_marking_stopped);
 }
 
@@ -147,6 +146,7 @@ GCIdleTimeAction GCIdleTimeHandler::Compute(double idle_time_in_ms,
   return GCIdleTimeAction::IncrementalStep();
 }
 
+bool GCIdleTimeHandler::Enabled() { return FLAG_incremental_marking; }
 
 }  // namespace internal
 }  // namespace v8

@@ -74,6 +74,9 @@ namespace internal {
   V(stX_6)                  \
   V(stX_7)
 
+#define FLOAT_REGISTERS DOUBLE_REGISTERS
+#define SIMD128_REGISTERS DOUBLE_REGISTERS
+
 #define ALLOCATABLE_DOUBLE_REGISTERS(V) \
   V(stX_0)                              \
   V(stX_1)                              \
@@ -120,8 +123,6 @@ struct Register {
     Register r = {code};
     return r;
   }
-  const char* ToString();
-  bool IsAllocatable() const;
   bool is_valid() const { return 0 <= reg_code && reg_code < kNumRegisters; }
   bool is(Register reg) const { return reg_code == reg.reg_code; }
   int code() const {
@@ -145,8 +146,10 @@ GENERAL_REGISTERS(DECLARE_REGISTER)
 #undef DECLARE_REGISTER
 const Register no_reg = {Register::kCode_no_reg};
 
+static const bool kSimpleFPAliasing = true;
+static const bool kSimdMaskRegisters = false;
 
-struct DoubleRegister {
+struct X87Register {
   enum Code {
 #define REGISTER_CODE(R) kCode_##R,
     DOUBLE_REGISTERS(REGISTER_CODE)
@@ -158,12 +161,11 @@ struct DoubleRegister {
   static const int kMaxNumRegisters = Code::kAfterLast;
   static const int kMaxNumAllocatableRegisters = 6;
 
-  static DoubleRegister from_code(int code) {
-    DoubleRegister result = {code};
+  static X87Register from_code(int code) {
+    X87Register result = {code};
     return result;
   }
 
-  bool IsAllocatable() const;
   bool is_valid() const { return 0 <= reg_code && reg_code < kMaxNumRegisters; }
 
   int code() const {
@@ -171,23 +173,23 @@ struct DoubleRegister {
     return reg_code;
   }
 
-  bool is(DoubleRegister reg) const { return reg_code == reg.reg_code; }
-
-  const char* ToString();
+  bool is(X87Register reg) const { return reg_code == reg.reg_code; }
 
   int reg_code;
 };
+
+typedef X87Register FloatRegister;
+
+typedef X87Register DoubleRegister;
+
+// TODO(x87) Define SIMD registers.
+typedef X87Register Simd128Register;
 
 #define DECLARE_REGISTER(R) \
   const DoubleRegister R = {DoubleRegister::kCode_##R};
 DOUBLE_REGISTERS(DECLARE_REGISTER)
 #undef DECLARE_REGISTER
 const DoubleRegister no_double_reg = {DoubleRegister::kCode_no_reg};
-
-typedef DoubleRegister X87Register;
-
-// TODO(x87) Define SIMD registers.
-typedef DoubleRegister Simd128Register;
 
 enum Condition {
   // any value < 0 is considered no_condition
@@ -481,8 +483,9 @@ class Assembler : public AssemblerBase {
   // for code generation and assumes its size to be buffer_size. If the buffer
   // is too small, a fatal error occurs. No deallocation of the buffer is done
   // upon destruction of the assembler.
-  // TODO(vitalyr): the assembler does not need an isolate.
-  Assembler(Isolate* isolate, void* buffer, int buffer_size);
+  Assembler(Isolate* isolate, void* buffer, int buffer_size)
+      : Assembler(IsolateData(isolate), buffer, buffer_size) {}
+  Assembler(IsolateData isolate_data, void* buffer, int buffer_size);
   virtual ~Assembler() { }
 
   // GetCode emits any pending (non-emitted) code and fills the descriptor
@@ -491,20 +494,15 @@ class Assembler : public AssemblerBase {
   void GetCode(CodeDesc* desc);
 
   // Read/Modify the code target in the branch/call instruction at pc.
+  // The isolate argument is unused (and may be nullptr) when skipping flushing.
   inline static Address target_address_at(Address pc, Address constant_pool);
   inline static void set_target_address_at(
       Isolate* isolate, Address pc, Address constant_pool, Address target,
       ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
-  static inline Address target_address_at(Address pc, Code* code) {
-    Address constant_pool = code ? code->constant_pool() : NULL;
-    return target_address_at(pc, constant_pool);
-  }
+  static inline Address target_address_at(Address pc, Code* code);
   static inline void set_target_address_at(
       Isolate* isolate, Address pc, Code* code, Address target,
-      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED) {
-    Address constant_pool = code ? code->constant_pool() : NULL;
-    set_target_address_at(isolate, pc, constant_pool, target);
-  }
+      ICacheFlushMode icache_flush_mode = FLUSH_ICACHE_IF_NEEDED);
 
   // Return the code target address at a call site from the return address
   // of that call in the instruction stream.
@@ -648,6 +646,16 @@ class Assembler : public AssemblerBase {
   // Exchange
   void xchg(Register dst, Register src);
   void xchg(Register dst, const Operand& src);
+  void xchg_b(Register reg, const Operand& op);
+  void xchg_w(Register reg, const Operand& op);
+
+  // Lock prefix
+  void lock();
+
+  // CompareExchange
+  void cmpxchg(const Operand& dst, Register src);
+  void cmpxchg_b(const Operand& dst, Register src);
+  void cmpxchg_w(const Operand& dst, Register src);
 
   // Arithmetics
   void adc(Register dst, int32_t imm32);
@@ -946,9 +954,6 @@ class Assembler : public AssemblerBase {
     return pc_offset() - label->pos();
   }
 
-  // Mark generator continuation.
-  void RecordGeneratorContinuation();
-
   // Mark address of a debug break slot.
   void RecordDebugBreakSlot(RelocInfo::Mode mode);
 
@@ -958,7 +963,8 @@ class Assembler : public AssemblerBase {
 
   // Record a deoptimization reason that can be used by a log or cpu profiler.
   // Use --trace-deopt to enable.
-  void RecordDeoptReason(const int reason, int raw_position);
+  void RecordDeoptReason(DeoptimizeReason reason, SourcePosition position,
+                         int id);
 
   // Writes a single byte or word of data in the code stream.  Used for
   // inline tables, e.g., jump-tables.
@@ -979,10 +985,6 @@ class Assembler : public AssemblerBase {
   inline int available_space() const { return reloc_info_writer.pos() - pc_; }
 
   static bool IsNop(Address addr);
-
-  AssemblerPositionsRecorder* positions_recorder() {
-    return &positions_recorder_;
-  }
 
   int relocation_writer_size() {
     return (buffer_ + buffer_size_) - reloc_info_writer.pos();
@@ -1069,9 +1071,6 @@ class Assembler : public AssemblerBase {
 
   // code generation
   RelocInfoWriter reloc_info_writer;
-
-  AssemblerPositionsRecorder positions_recorder_;
-  friend class AssemblerPositionsRecorder;
 };
 
 

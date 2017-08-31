@@ -2,17 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// lastIndex is set according to funny rules. It is typically set only
-// for global or sticky RegExps, but on a failure to find a match, it is
-// set unconditionally. If a set fails, then it acts as if in strict mode
+// lastIndex is set only for global or sticky RegExps. On failure to find
+// a match, it is set to 0. If a set fails, then it acts as if in strict mode
 // and throws.
 
-var re = /x/;
+var re = /x/g;
 Object.defineProperty(re, 'lastIndex', {writable: false});
 assertThrows(() => re.exec(""), TypeError);
-assertEquals(["x"], re.exec("x"));
+assertThrows(() => re.exec("x"), TypeError);
 
 var re = /x/y;
 Object.defineProperty(re, 'lastIndex', {writable: false});
 assertThrows(() => re.exec(""), TypeError);
 assertThrows(() => re.exec("x"), TypeError);
+
+var re = /x/;
+Object.defineProperty(re, 'lastIndex', {writable: false});
+assertEquals(null, re.exec(""));
+assertEquals(["x"], re.exec("x"));

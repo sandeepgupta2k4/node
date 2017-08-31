@@ -5,9 +5,12 @@
   'variables': {
     'files': [
       'data.tar',
+      'detachArrayBuffer.js',
       'harness-adapt.js',
+      'harness-agent.js',
       'test262.status',
       'testcfg.py',
+      'local-tests/',
     ],
   },
   'includes': [

@@ -1,12 +1,10 @@
-/* eslint no-deepEqual: 0 */
 'use strict';
 
 require('../common');
 const assert = require('assert');
-const a = require('assert');
 
 function makeBlock(f) {
-  var args = Array.prototype.slice.call(arguments, 1);
+  const args = Array.prototype.slice.call(arguments, 1);
   return function() {
     return f.apply(this, args);
   };
@@ -26,7 +24,10 @@ const equalArrayPairs = [
   [new Int16Array([256]), new Uint16Array([256])],
   [new Float32Array([+0.0]), new Float32Array([-0.0])],
   [new Float64Array([+0.0]), new Float32Array([-0.0])],
-  [new Float64Array([+0.0]), new Float64Array([-0.0])]
+  [new Float64Array([+0.0]), new Float64Array([-0.0])],
+  [new Uint8Array([1, 2, 3, 4]).subarray(1), new Uint8Array([2, 3, 4])],
+  [new Uint16Array([1, 2, 3, 4]).subarray(1), new Uint16Array([2, 3, 4])],
+  [new Uint32Array([1, 2, 3, 4]).subarray(1, 3), new Uint32Array([2, 3])]
 ];
 
 const notEqualArrayPairs = [
@@ -43,12 +44,14 @@ const notEqualArrayPairs = [
 ];
 
 equalArrayPairs.forEach((arrayPair) => {
+  // eslint-disable-next-line no-restricted-properties
   assert.deepEqual(arrayPair[0], arrayPair[1]);
 });
 
 notEqualArrayPairs.forEach((arrayPair) => {
   assert.throws(
-    makeBlock(a.deepEqual, arrayPair[0], arrayPair[1]),
-    a.AssertionError
+    // eslint-disable-next-line no-restricted-properties
+    makeBlock(assert.deepEqual, arrayPair[0], arrayPair[1]),
+    assert.AssertionError
   );
 });

@@ -33,17 +33,23 @@ PUBLIC_BENCHMARKS = [
   'emscripten',
   'compile',
   'jetstream',
+  'jetstream-ignition',
   'jsbench',
   'jstests',
   'kraken_orig',
+  'kraken_orig-ignition',
   'massive',
   'memory',
   'octane',
+  'octane-noopt',
+  'octane-ignition',
   'octane-pr',
   'octane-tf',
   'octane-tf-pr',
-  'simdjs',
   'sunspider',
+  'sunspider-ignition',
+  'unity',
+  'wasm',
 ]
 
 V8_BASE = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
@@ -85,7 +91,7 @@ def main():
 
   # Ensure depot_tools are updated.
   subprocess.check_output(
-      'gclient', shell=True, stderr=subprocess.STDOUT, cwd=V8_BASE)
+      'update_depot_tools', shell=True, stderr=subprocess.STDOUT, cwd=V8_BASE)
 
   cmd = ['git cl try -m internal.client.v8']
   cmd += ['-b %s' % bot for bot in options.bots]

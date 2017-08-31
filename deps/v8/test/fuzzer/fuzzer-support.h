@@ -16,7 +16,7 @@ class FuzzerSupport {
 
   static FuzzerSupport* Get();
 
-  v8::Isolate* GetIsolate();
+  v8::Isolate* GetIsolate() const;
   v8::Local<v8::Context> GetContext();
 
  private:
@@ -24,10 +24,9 @@ class FuzzerSupport {
   FuzzerSupport(const FuzzerSupport&);
   FuzzerSupport& operator=(const FuzzerSupport&);
 
-  class ArrayBufferAllocator;
 
   v8::Platform* platform_;
-  ArrayBufferAllocator* allocator_;
+  v8::ArrayBuffer::Allocator* allocator_;
   v8::Isolate* isolate_;
   v8::Global<v8::Context> context_;
 };

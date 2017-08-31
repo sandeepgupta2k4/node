@@ -20,16 +20,10 @@ class Isolate;
 // The JobTraits class needs to define:
 // - PerPageData type - state associated with each page.
 // - PerTaskData type - state associated with each task.
-// - static bool ProcessPageInParallel(Heap* heap,
+// - static void ProcessPageInParallel(Heap* heap,
 //                                     PerTaskData task_data,
 //                                     MemoryChunk* page,
 //                                     PerPageData page_data)
-//   The function should return true iff processing succeeded.
-// - static const bool NeedSequentialFinalization
-// - static void FinalizePageSequentially(Heap* heap,
-//                                        bool processing_succeeded,
-//                                        MemoryChunk* page,
-//                                        PerPageData page_data)
 template <typename JobTraits>
 class PageParallelJob {
  public:
@@ -37,7 +31,7 @@ class PageParallelJob {
   // glibc. See http://crbug.com/609249 and
   // https://sourceware.org/bugzilla/show_bug.cgi?id=12674.
   // The caller must provide a semaphore with value 0 and ensure that
-  // the lifetime of the semaphore is the same as the lifetime of the Isolate
+  // the lifetime of the semaphore is the same as the lifetime of the Isolate.
   // It is guaranteed that the semaphore value will be 0 after Run() call.
   PageParallelJob(Heap* heap, CancelableTaskManager* cancelable_task_manager,
                   base::Semaphore* semaphore)
@@ -63,10 +57,10 @@ class PageParallelJob {
     ++num_items_;
   }
 
-  int NumberOfPages() { return num_items_; }
+  int NumberOfPages() const { return num_items_; }
 
   // Returns the number of tasks that were spawned when running the job.
-  int NumberOfTasks() { return num_tasks_; }
+  int NumberOfTasks() const { return num_tasks_; }
 
   // Runs the given number of tasks in parallel and processes the previously
   // added pages. This function blocks until all tasks finish.
@@ -75,7 +69,7 @@ class PageParallelJob {
   void Run(int num_tasks, Callback per_task_data_callback) {
     if (num_items_ == 0) return;
     DCHECK_GE(num_tasks, 1);
-    uint32_t task_ids[kMaxNumberOfTasks];
+    CancelableTaskManager::Id task_ids[kMaxNumberOfTasks];
     const int max_num_tasks = Min(
         kMaxNumberOfTasks,
         static_cast<int>(
@@ -103,31 +97,23 @@ class PageParallelJob {
     delete main_task;
     // Wait for background tasks.
     for (int i = 0; i < num_tasks_; i++) {
-      if (!cancelable_task_manager_->TryAbort(task_ids[i])) {
+      if (cancelable_task_manager_->TryAbort(task_ids[i]) !=
+          CancelableTaskManager::kTaskAborted) {
         pending_tasks_->Wait();
-      }
-    }
-    if (JobTraits::NeedSequentialFinalization) {
-      Item* item = items_;
-      while (item != nullptr) {
-        bool success = (item->state.Value() == kFinished);
-        JobTraits::FinalizePageSequentially(heap_, item->chunk, success,
-                                            item->data);
-        item = item->next;
       }
     }
   }
 
  private:
-  static const int kMaxNumberOfTasks = 10;
+  static const int kMaxNumberOfTasks = 32;
 
-  enum ProcessingState { kAvailable, kProcessing, kFinished, kFailed };
+  enum ProcessingState { kAvailable, kProcessing, kFinished };
 
   struct Item : public Malloced {
     Item(MemoryChunk* chunk, typename JobTraits::PerPageData data, Item* next)
         : chunk(chunk), state(kAvailable), data(data), next(next) {}
     MemoryChunk* chunk;
-    AtomicValue<ProcessingState> state;
+    base::AtomicValue<ProcessingState> state;
     typename JobTraits::PerPageData data;
     Item* next;
   };
@@ -157,9 +143,9 @@ class PageParallelJob {
       }
       for (int i = 0; i < num_items_; i++) {
         if (current->state.TrySetValue(kAvailable, kProcessing)) {
-          bool success = JobTraits::ProcessPageInParallel(
-              heap_, data_, current->chunk, current->data);
-          current->state.SetValue(success ? kFinished : kFailed);
+          JobTraits::ProcessPageInParallel(heap_, data_, current->chunk,
+                                           current->data);
+          current->state.SetValue(kFinished);
         }
         current = current->next;
         // Wrap around if needed.
